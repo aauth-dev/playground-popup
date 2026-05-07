@@ -4627,6 +4627,12 @@ ${renderJSON(body)}`;
       return;
     }
     helloBtn.classList.add("hello-btn-loader");
+    const watcher = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(watcher);
+        helloBtn.classList.remove("hello-btn-loader");
+      }
+    }, 250);
   });
   function showPopupBlockedMessage(btn) {
     const container = btn.closest(".interaction-actions");
