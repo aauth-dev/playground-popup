@@ -1,4 +1,4 @@
-name = "playground-aauth-dev"
+name = "playground-popup-aauth-dev"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
 # @hellocoop/httpsig references `Buffer` in signature.js (a Node built-in);
@@ -9,14 +9,18 @@ compatibility_flags = ["nodejs_compat"]
 directory = "public"
 
 [vars]
-ORIGIN = "https://playground.aauth.dev"
-AGENT_NAME = "AAuth Playground"
+ORIGIN = "https://playground-popup.aauth.dev"
+AGENT_NAME = "AAuth Playground (popup)"
 
 [[kv_namespaces]]
+# Separate KV namespace from prod playground so popup-experiment enrollments
+# don't share the (jkt → agent local-part) mapping with prod. Title in the
+# Cloudflare dashboard is `WEBAUTHN_KV_POPUP`; binding name stays
+# `WEBAUTHN_KV` so code paths in src/index.ts work unchanged.
 binding = "WEBAUTHN_KV"
-id = "8f3528fb8a884a7fa5d6e506ee783eca"
+id = "6e1d1aedbce1468c8ab874d310079820"
 
 # Custom domain — requires aauth.dev zone in this Cloudflare account
 [[routes]]
-pattern = "playground.aauth.dev"
+pattern = "playground-popup.aauth.dev"
 custom_domain = true

@@ -1,11 +1,16 @@
-# playground.aauth.dev — Claude project notes
+# playground-popup.aauth.dev — Claude project notes
+
+This is a fork of `playground.aauth.dev` for experimenting with
+pop-up modal AAuth flows. The original `playground.aauth.dev` is
+the prod Worker and must not be touched — this fork deploys to a
+separate Worker on a separate domain.
 
 ## Deployment
 
-**Do not run `wrangler deploy` manually.** Cloudflare Workers Builds is
-connected to this repo and auto-deploys on every push to `main`. The
-build runs `npm run build:client` (bundles `client/protocol.js` into
-`public/protocol.js`), then `npx wrangler deploy`.
+**Do not run `wrangler deploy` manually.** Cloudflare Workers Builds
+is connected to this repo and auto-deploys on every push to `main`.
+The build runs `npm run build:client` (bundles `client/protocol.js`
+into `public/protocol.js`), then `npx wrangler deploy`.
 
 To ship a change:
 
@@ -13,12 +18,12 @@ To ship a change:
 2. `git push origin main`.
 3. Verify (usually live within a minute):
    ```bash
-   curl -s https://playground.aauth.dev/.well-known/aauth-agent.json | jq .
+   curl -s https://playground-popup.aauth.dev/.well-known/aauth-agent.json | jq .
    ```
 
 Check deployment history with `npx wrangler deployments list`. If an
-auto-deploy fails, the dashboard (Workers & Pages → playground-aauth-dev
-→ Deployments) shows build logs.
+auto-deploy fails, the dashboard (Workers & Pages →
+playground-popup-aauth-dev → Deployments) shows build logs.
 
 ## Local development
 
