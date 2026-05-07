@@ -521,14 +521,10 @@ function formatResponse(status, headers, body) {
   if (body) {
     inner += `\n${renderJSON(body)}`
   }
-  // Status indicator next to the "Response" caption — check for 2xx/3xx,
-  // X for 4xx/5xx — so the per-block outcome is visible right at the
-  // caption without scanning the JSON for the status code.
-  const isOk = status >= 200 && status < 400
-  const indicator = isOk
-    ? '<span class="step-status step-status-success"> ✓</span>'
-    : '<span class="step-status step-status-error"> ✗</span>'
-  return `<div class="token-label token-label-response">Response${indicator}</div>${tokenWrap(inner, 'token-display-response')}`
+  // Outcome of the response is conveyed by the parent step's left
+  // border (green / red) — adding a check or X next to "Response"
+  // duplicates that signal.
+  return `<div class="token-label token-label-response">Response</div>${tokenWrap(inner, 'token-display-response')}`
 }
 
 function formatToken(label, token, decoded, payloadLabel) {
@@ -547,10 +543,13 @@ function formatToken(label, token, decoded, payloadLabel) {
 // token kind so the user can match it back to whichever token the
 // response carried (agent_token, resource_token, auth_token).
 function formatDecoded(decoded, label = 'payload') {
+  // Decoded payloads are derived from the previous response body, so
+  // tint the inner box with the response color to keep the visual
+  // chain (Response box → decoded payload) reading as one thread.
   return `
     <details class="section-group" open>
       <summary class="section-heading"><span>${escapeHtml(label)}</span>${CHEVRON_SVG}</summary>
-      ${tokenWrap(renderJSON(decoded))}
+      ${tokenWrap(renderJSON(decoded), 'token-display-response')}
     </details>
   `
 }
@@ -563,7 +562,7 @@ function formatAuthToken(token) {
     ${tokenWrap(renderEncodedJWT(token), 'encoded')}
     <details class="section-group" open>
       <summary class="section-heading"><span>auth_token payload</span>${CHEVRON_SVG}</summary>
-      ${tokenWrap(renderJSON(decodeJWTPayloadBrowser(token)))}
+      ${tokenWrap(renderJSON(decodeJWTPayloadBrowser(token)), 'token-display-response')}
     </details>
   `
 }
@@ -893,7 +892,12 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
       return
     }
     if (res.status === 401 && resourceToken) {
-      resolveStep(step1, 'success', `Agent → Whoami: GET ${whoamiPathDisplay}`)
+      // 401 IS the expected first response from a resource that
+      // demands auth — the flow proceeds to PS token exchange next —
+      // but visually the step border tracks the HTTP status (red)
+      // rather than the protocol-level outcome, so the line color
+      // matches the "HTTP 401" the user is reading inside the box.
+      resolveStep(step1, 'error', `Agent → Whoami: GET ${whoamiPathDisplay}`)
       appendStepBody(step1, formatResponse(401, respHeaders, body))
       appendStepBody(step1, formatDecoded(decodeJWTPayloadBrowser(resourceToken), 'resource_token payload'))
     } else {

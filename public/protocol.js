@@ -3344,15 +3344,13 @@
       inner += `
 ${renderJSON(body)}`;
     }
-    const isOk = status >= 200 && status < 400;
-    const indicator = isOk ? '<span class="step-status step-status-success"> \u2713</span>' : '<span class="step-status step-status-error"> \u2717</span>';
-    return `<div class="token-label token-label-response">Response${indicator}</div>${tokenWrap(inner, "token-display-response")}`;
+    return `<div class="token-label token-label-response">Response</div>${tokenWrap(inner, "token-display-response")}`;
   }
   function formatDecoded(decoded, label = "payload") {
     return `
     <details class="section-group" open>
       <summary class="section-heading"><span>${escapeHtml(label)}</span>${CHEVRON_SVG}</summary>
-      ${tokenWrap(renderJSON(decoded))}
+      ${tokenWrap(renderJSON(decoded), "token-display-response")}
     </details>
   `;
   }
@@ -3361,7 +3359,7 @@ ${renderJSON(body)}`;
     ${tokenWrap(renderEncodedJWT(token), "encoded")}
     <details class="section-group" open>
       <summary class="section-heading"><span>auth_token payload</span>${CHEVRON_SVG}</summary>
-      ${tokenWrap(renderJSON(decodeJWTPayloadBrowser(token)))}
+      ${tokenWrap(renderJSON(decodeJWTPayloadBrowser(token)), "token-display-response")}
     </details>
   `;
   }
@@ -3590,7 +3588,7 @@ ${renderJSON(body)}`;
         return;
       }
       if (res.status === 401 && resourceToken) {
-        resolveStep(step1, "success", `Agent \u2192 Whoami: GET ${whoamiPathDisplay}`);
+        resolveStep(step1, "error", `Agent \u2192 Whoami: GET ${whoamiPathDisplay}`);
         appendStepBody(step1, formatResponse(401, respHeaders, body));
         appendStepBody(step1, formatDecoded(decodeJWTPayloadBrowser(resourceToken), "resource_token payload"));
       } else {

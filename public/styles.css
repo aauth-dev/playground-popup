@@ -203,18 +203,25 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled {
 }
 /* Request/response tinted boxes — same hue as their .token-label and
    directional arrow so the body and caption read as a matched pair.
-   Tints stay light so the JSON inside remains the focus. */
+   Tints stay light so the JSON inside remains the focus.
+
+   Response-kind step bodies (Identity claims received, Auth Token
+   received, Authorization Granted, …) inherit the response tint on
+   every .token-display they contain — the whole step is, structurally,
+   one extended response artifact. */
 .token-display.token-display-request {
   background: rgba(14, 165, 233, 0.08);
 }
-.token-display.token-display-response {
+.token-display.token-display-response,
+.log-step-response .token-display {
   background: rgba(168, 85, 247, 0.08);
 }
 @media (prefers-color-scheme: dark) {
   .token-display.token-display-request {
     background: rgba(56, 189, 248, 0.12);
   }
-  .token-display.token-display-response {
+  .token-display.token-display-response,
+  .log-step-response .token-display {
     background: rgba(192, 132, 252, 0.12);
   }
 }
