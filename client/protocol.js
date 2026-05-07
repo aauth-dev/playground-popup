@@ -236,7 +236,11 @@ function statusIndicatorHtml(status) {
   if (status === 'pending') {
     return '<span class="step-status step-status-pending"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>'
   }
-  if (status === 'success') return '<span class="step-status step-status-success">\u2713</span>'
+  // Success state is conveyed by the green left-border on the step
+  // box plus the "\u2192 <2xx>" suffix in the resolved label, so a check
+  // glyph in the heading reads as redundant "the response is OK"
+  // marker on what is structurally a request line.
+  if (status === 'success') return ''
   return '<span class="step-status step-status-error">\u2717</span>'
 }
 
@@ -475,17 +479,25 @@ function tokenWrap(innerHtml, extraClass = '') {
   </div>`
 }
 
+// Render the actual on-the-wire HTTP request: headers + body, no
+// synthetic "METHOD url" line. The step heading already names the
+// route (e.g. "Agent → Agent Provider: POST /bootstrap"), and the
+// method/URL aren't part of what gets transmitted at the wire level
+// — what matters here is the headers (Content-Type, Signature-*,
+// Authorization, …) and the body.
 function formatRequest(method, url, headers, body) {
-  let inner = `${escapeHtml(method)} ${escapeHtml(url)}\n`
+  let inner = ''
   if (headers) {
     for (const [k, v] of Object.entries(headers)) {
       inner += `${escapeHtml(k)}: ${escapeHtml(v)}\n`
     }
   }
   if (body) {
-    inner += `\n${renderJSON(body)}`
+    if (inner) inner += '\n'
+    inner += renderJSON(body)
   }
-  return `<div class="token-label">Request</div>${tokenWrap(inner)}`
+  if (!inner) inner = `${escapeHtml(method)} ${escapeHtml(url)}`
+  return `<div class="token-label token-label-request">Request</div>${tokenWrap(inner)}`
 }
 
 function formatResponse(status, headers, body) {
@@ -498,27 +510,28 @@ function formatResponse(status, headers, body) {
   if (body) {
     inner += `\n${renderJSON(body)}`
   }
-  return `<div class="token-label">Response</div>${tokenWrap(inner)}`
+  return `<div class="token-label token-label-response">Response</div>${tokenWrap(inner)}`
 }
 
-function formatToken(label, token, decoded) {
+function formatToken(label, token, decoded, payloadLabel) {
   return `
     <details class="section-group">
       <summary class="section-heading"><span>${escapeHtml(label)}</span>${CHEVRON_SVG}</summary>
       ${tokenWrap(renderEncodedJWT(token), 'encoded')}
     </details>
-    ${formatDecoded(decoded)}
+    ${formatDecoded(decoded, payloadLabel)}
   `
 }
 
 // Decoded JWT payload as its own open <details>. Used on its own
 // (e.g., under a /pending or /verify response block) to surface the
-// decoded token alongside the raw response without the extra
-// 'encoded token' block formatToken emits.
-function formatDecoded(decoded) {
+// decoded payload alongside the raw response. The label names the
+// token kind so the user can match it back to whichever token the
+// response carried (agent_token, resource_token, auth_token).
+function formatDecoded(decoded, label = 'payload') {
   return `
     <details class="section-group" open>
-      <summary class="section-heading"><span>Decoded</span>${CHEVRON_SVG}</summary>
+      <summary class="section-heading"><span>${escapeHtml(label)}</span>${CHEVRON_SVG}</summary>
       ${tokenWrap(renderJSON(decoded))}
     </details>
   `
@@ -531,7 +544,7 @@ function formatAuthToken(token) {
   return `
     ${tokenWrap(renderEncodedJWT(token), 'encoded')}
     <details class="section-group" open>
-      <summary class="section-heading"><span>Decoded</span>${CHEVRON_SVG}</summary>
+      <summary class="section-heading"><span>auth_token payload</span>${CHEVRON_SVG}</summary>
       ${tokenWrap(renderJSON(decodeJWTPayloadBrowser(token)))}
     </details>
   `
@@ -607,7 +620,7 @@ async function runBootstrap(psUrl) {
     }
     resolveStep(reqStep, 'success', fmt(copy('bootstrap.agent_provider_request.label_resolved_template'), { path: '/bootstrap' }) + ` → ${res.status}`)
     appendStepBody(reqStep, formatResponse(res.status, null, result))
-    appendStepBody(reqStep, formatDecoded(decodeJWTPayloadBrowser(result.agent_token)))
+    appendStepBody(reqStep, formatDecoded(decodeJWTPayloadBrowser(result.agent_token), 'agent_token payload'))
   } catch (err) {
     resolveStep(reqStep, 'error', fmt(copy('bootstrap.agent_provider_request.label_error_network_template'), { path: '/bootstrap' }))
     appendStepBody(reqStep, `<p style="color: var(--error)">${escapeHtml(err.message)}</p>`)
@@ -676,7 +689,7 @@ async function runRefresh() {
     }
     resolveStep(reqStep, 'success', fmt(copy('refresh.agent_provider_request.label_resolved_template'), { path: '/refresh' }) + ` → ${res.status}`)
     appendStepBody(reqStep, formatResponse(res.status, null, result))
-    appendStepBody(reqStep, formatDecoded(decodeJWTPayloadBrowser(result.agent_token)))
+    appendStepBody(reqStep, formatDecoded(decodeJWTPayloadBrowser(result.agent_token), 'agent_token payload'))
   } catch (err) {
     resolveStep(reqStep, 'error', fmt(copy('refresh.agent_provider_request.label_error_network_template'), { path: '/refresh' }))
     appendStepBody(reqStep, `<p style="color: var(--error)">${escapeHtml(err.message)}</p>`)
@@ -863,7 +876,7 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
     if (res.status === 401 && resourceToken) {
       resolveStep(step1, 'success', `Agent → Whoami: GET ${whoamiPathDisplay}`)
       appendStepBody(step1, formatResponse(401, respHeaders, body))
-      appendStepBody(step1, formatDecoded(decodeJWTPayloadBrowser(resourceToken)))
+      appendStepBody(step1, formatDecoded(decodeJWTPayloadBrowser(resourceToken), 'resource_token payload'))
     } else {
       resolveStep(step1, 'error', `Agent → Whoami: GET ${whoamiPathDisplay}`)
       appendStepBody(step1, formatResponse(res.status, respHeaders, body) + anotherRequestButton())
@@ -920,7 +933,7 @@ function showWhoamiAuthTokenReceived(authToken) {
   // above" copy would have nothing to point at.
   addLogStep('Auth Token received', 'success',
     `<p>The Person Server released an auth_token for the requested whoami scopes. The agent will use this to sign the next call to Whoami.</p>` +
-    formatDecoded(decodeJWTPayloadBrowser(authToken))
+    formatDecoded(decodeJWTPayloadBrowser(authToken), 'auth_token payload')
   )
 }
 
@@ -1295,7 +1308,7 @@ async function runPSTokenExchange({
       authToken = psResBody.auth_token
       resolveStep(step2, 'success', labels.postLabelResolved(psPath, 200))
       appendStepBody(step2, formatResponse(200, respHeaders, psResBody))
-      appendStepBody(step2, formatDecoded(decodeJWTPayloadBrowser(authToken)))
+      appendStepBody(step2, formatDecoded(decodeJWTPayloadBrowser(authToken), 'auth_token payload'))
       // Falls through to the post-200 handoff below.
     } else if (psRes.status === 202) {
       resolveStep(step2, 'success', labels.postLabelResolved(psPath, 202))
@@ -1831,7 +1844,7 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
       resourceToken = body.resource_token
       resolveStep(step1, 'success', fmt(copy('notes.authorize_request.label_resolved_template'), { path: authzPath, status: res.status }))
       appendStepBody(step1, formatResponse(res.status, null, body))
-      appendStepBody(step1, formatDecoded(decodeJWTPayloadBrowser(resourceToken)))
+      appendStepBody(step1, formatDecoded(decodeJWTPayloadBrowser(resourceToken), 'resource_token payload'))
       await previewR3Document(decodeJWTPayloadBrowser(resourceToken))
     } else {
       resolveStep(step1, 'error', fmt(copy('notes.authorize_request.label_resolved_template'), { path: authzPath, status: res.status }))
@@ -1883,7 +1896,7 @@ async function finalizeNotesAuthToken(authToken) {
   localStorage.setItem(NOTES_AUTH_TOKEN_KEY, authToken)
   addLogStep(copy('notes.auth_token_received.label'), 'success',
     desc('notes.auth_token_received') +
-      formatDecoded(decodeJWTPayloadBrowser(authToken)) +
+      formatDecoded(decodeJWTPayloadBrowser(authToken), 'auth_token payload') +
       anotherRequestButton(),
   )
   revealNotesApp()

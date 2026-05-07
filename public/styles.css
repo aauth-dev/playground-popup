@@ -497,71 +497,17 @@ details.log-section > #decoded-payload-details:last-child {
 }
 .log-step-static > .section-heading { cursor: default; }
 
-/* Party badges — inline chips that replace the text "Agent Provider",
-   "Person Server", "Notes Resource", "Notes API", "Whoami" inside step
-   labels. Color-codes which party issued/received the artifact so a
-   reader can scan vertically and see "AP, AP, PS, PS, RS" down the log
-   without having to parse each label. Applied only to step labels (not
-   prose descriptions) to avoid sentence-level noise. */
+/* Party names inside step labels — rendered as plain inline text. The
+   .party-badge wrapper exists so future styling (e.g. linking to a
+   glossary) can target it, but no chip background/border by default. */
 .log-step .step-text {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
 }
 .party-badge {
-  display: inline-block;
-  margin: 0 5px;
-  padding: 0 0.4rem;
-  border: 1px solid;
-  border-radius: 999px;
-  font-size: 0.78em;
-  font-weight: 500;
-  line-height: 1.5;
+  display: inline;
   white-space: nowrap;
-  vertical-align: baseline;
-}
-.party-badge.party-ap { background: #EDE9FE; color: #5B21B6; border-color: #C4B5FD; }
-.party-badge.party-ps { background: #E0F2FE; color: #075985; border-color: #7DD3FC; }
-.party-badge.party-rs { background: #FCE7F3; color: #9D174D; border-color: #F9A8D4; }
-@media (prefers-color-scheme: dark) {
-  .party-badge.party-ap { background: rgba(139, 92, 246, 0.15); color: #C4B5FD; border-color: rgba(139, 92, 246, 0.4); }
-  .party-badge.party-ps { background: rgba(14, 165, 233, 0.15); color: #7DD3FC; border-color: rgba(14, 165, 233, 0.4); }
-  .party-badge.party-rs { background: rgba(236, 72, 153, 0.15); color: #F9A8D4; border-color: rgba(236, 72, 153, 0.4); }
-}
-
-/* Step-box party tinting — fills each step with a subtle background in
-   its party's hue plus a top/right/bottom border. Border-left is left
-   alone so the existing 3px status-color bar (success/pending/error)
-   keeps showing the step's outcome. Corners on the right round so the
-   tint reads as a contained block while still attaching cleanly to the
-   left status bar. */
-.log-step.party-bg-ap,
-.log-step.party-bg-ps,
-.log-step.party-bg-rs {
-  border-top: 1px solid;
-  border-right: 1px solid;
-  border-bottom: 1px solid;
-  padding-top: 0.5rem;
-  padding-right: 0.75rem;
-  padding-bottom: 0.5rem;
-  margin-bottom: 0;
-}
-/* When two adjacent steps share the same party tint, drop the inner
-   border so the run reads as one continuous tinted block instead of a
-   stack of cards stitched together by a doubled 2px line. */
-.log-step.party-bg-ap + .log-step.party-bg-ap,
-.log-step.party-bg-ps + .log-step.party-bg-ps,
-.log-step.party-bg-rs + .log-step.party-bg-rs { border-top: none; }
-.log-step.party-bg-ap:has(+ .log-step.party-bg-ap),
-.log-step.party-bg-ps:has(+ .log-step.party-bg-ps),
-.log-step.party-bg-rs:has(+ .log-step.party-bg-rs) { border-bottom: none; }
-.log-step.party-bg-ap { background: rgba(139, 92, 246, 0.06); border-top-color: rgba(139, 92, 246, 0.35); border-right-color: rgba(139, 92, 246, 0.35); border-bottom-color: rgba(139, 92, 246, 0.35); }
-.log-step.party-bg-ps { background: rgba(14, 165, 233, 0.06); border-top-color: rgba(14, 165, 233, 0.35); border-right-color: rgba(14, 165, 233, 0.35); border-bottom-color: rgba(14, 165, 233, 0.35); }
-.log-step.party-bg-rs { background: rgba(236, 72, 153, 0.06); border-top-color: rgba(236, 72, 153, 0.35); border-right-color: rgba(236, 72, 153, 0.35); border-bottom-color: rgba(236, 72, 153, 0.35); }
-@media (prefers-color-scheme: dark) {
-  .log-step.party-bg-ap { background: rgba(139, 92, 246, 0.1); border-top-color: rgba(139, 92, 246, 0.4); border-right-color: rgba(139, 92, 246, 0.4); border-bottom-color: rgba(139, 92, 246, 0.4); }
-  .log-step.party-bg-ps { background: rgba(14, 165, 233, 0.1); border-top-color: rgba(14, 165, 233, 0.4); border-right-color: rgba(14, 165, 233, 0.4); border-bottom-color: rgba(14, 165, 233, 0.4); }
-  .log-step.party-bg-rs { background: rgba(236, 72, 153, 0.1); border-top-color: rgba(236, 72, 153, 0.4); border-right-color: rgba(236, 72, 153, 0.4); border-bottom-color: rgba(236, 72, 153, 0.4); }
 }
 
 /* Body rendered under each step's heading. Step descriptions (the leading
@@ -579,13 +525,24 @@ details.log-section > #decoded-payload-details:last-child {
 .log-step-body > p:first-child {
   display: none;
 }
-/* "Request" / "Response" caption above each monospace box in a log step. */
+/* "Request" / "Response" caption above each monospace box in a log step.
+   Request/response variants get matching arrows + distinct colors so
+   the direction of each block is scannable at a glance (curl -v style:
+   `→` outbound, `←` inbound). */
 .token-label {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
   margin: 0 0 0.25rem;
+}
+.token-label-request { color: #0ea5e9; }
+.token-label-response { color: #a855f7; }
+.token-label-request::before { content: '\2192  '; }
+.token-label-response::before { content: '\2190  '; }
+@media (prefers-color-scheme: dark) {
+  .token-label-request { color: #38bdf8; }
+  .token-label-response { color: #c084fc; }
 }
 .token-label + .token-wrap { margin-top: 0; }
 .token-wrap + .token-label { margin-top: 0.75rem; }
