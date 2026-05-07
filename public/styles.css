@@ -201,6 +201,23 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled {
 @media (prefers-color-scheme: dark) {
   .token-display { background: #303030; }
 }
+/* Request/response tinted boxes — same hue as their .token-label and
+   directional arrow so the body and caption read as a matched pair.
+   Tints stay light so the JSON inside remains the focus. */
+.token-display.token-display-request {
+  background: rgba(14, 165, 233, 0.08);
+}
+.token-display.token-display-response {
+  background: rgba(168, 85, 247, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  .token-display.token-display-request {
+    background: rgba(56, 189, 248, 0.12);
+  }
+  .token-display.token-display-response {
+    background: rgba(192, 132, 252, 0.12);
+  }
+}
 .row { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; }
 .section { margin-top: 1.5rem; }
 label { font-size: 0.85rem; color: var(--muted); display: block; margin-bottom: 0.25rem; }
@@ -497,17 +514,21 @@ details.log-section > #decoded-payload-details:last-child {
 }
 .log-step-static > .section-heading { cursor: default; }
 
-/* Party names inside step labels — rendered as plain inline text. The
-   .party-badge wrapper exists so future styling (e.g. linking to a
-   glossary) can target it, but no chip background/border by default. */
-.log-step .step-text {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
+/* Step heading prefix tag — e.g. "← Response" rendered next to the
+   step text on response-kind steps so the reader can tell at a glance
+   that the step represents data coming back from a counterparty. Color
+   and arrow match the in-body Response token-label. */
+.step-kind {
+  font-size: 0.78em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 0.45rem;
 }
-.party-badge {
-  display: inline;
-  white-space: nowrap;
+.step-kind-response { color: #a855f7; }
+.step-kind-response::before { content: '\2190  '; }
+@media (prefers-color-scheme: dark) {
+  .step-kind-response { color: #c084fc; }
 }
 
 /* Body rendered under each step's heading. Step descriptions (the leading

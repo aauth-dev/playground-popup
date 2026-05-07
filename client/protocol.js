@@ -232,15 +232,20 @@ function showLog() {
 }
 
 
-function statusIndicatorHtml(status) {
+function statusIndicatorHtml(status, kind) {
   if (status === 'pending') {
     return '<span class="step-status step-status-pending"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>'
   }
-  // Success state is conveyed by the green left-border on the step
-  // box plus the "\u2192 <2xx>" suffix in the resolved label, so a check
-  // glyph in the heading reads as redundant "the response is OK"
-  // marker on what is structurally a request line.
-  if (status === 'success') return ''
+  // Request-line steps suppress the success check \u2014 the green left
+  // border + "\u2192 <2xx>" suffix already convey the outcome, and a check
+  // beside the request line reads as if the request itself succeeded
+  // rather than a response coming back. Response-kind steps DO get
+  // the check, since that's where the success-of-the-response actually
+  // belongs.
+  if (status === 'success') {
+    if (kind === 'response') return '<span class="step-status step-status-success">\u2713</span>'
+    return ''
+  }
   return '<span class="step-status step-status-error">\u2717</span>'
 }
 
@@ -260,12 +265,11 @@ const PARTY_BADGES = [
   ['Whoami', 'rs'],
 ]
 function applyPartyBadges(text) {
-  if (!text) return text
-  let out = text
-  for (const [name, key] of PARTY_BADGES) {
-    out = out.split(name).join(`<span class="party-badge party-${key}">${name}</span>`)
-  }
-  return out
+  // Party names render as plain inline text — no wrapper span. Earlier
+  // chip-style badges were dropped per design feedback; an inline span
+  // wrapper survived but interacted badly with the .step-text
+  // inline-flex container, so it's gone too.
+  return text
 }
 // Pick the party tint for a step. Order:
 //   1. counterparty name found in the label (e.g. "Person Server")
@@ -354,7 +358,12 @@ function currentSection(log) {
   return sections[sections.length - 1] || log
 }
 
-function addLogStep(label, status, content) {
+function kindBadgeHtml(kind) {
+  if (kind === 'response') return '<span class="step-kind step-kind-response">Response</span>'
+  return ''
+}
+
+function addLogStep(label, status, content, opts = {}) {
   const log = currentLog()
   if (!log) return null
   showLog()
@@ -362,12 +371,13 @@ function addLogStep(label, status, content) {
   const expandable = isExpandable(content)
   const step = expandable ? document.createElement('details') : document.createElement('div')
   const party = partyForLabel(label, target, previousStep(target))
-  step.className = `log-step section-group ${status}${expandable ? '' : ' log-step-static'}${party ? ` party-bg-${party}` : ''}`
+  const kind = opts.kind || null
+  step.className = `log-step section-group ${status}${expandable ? '' : ' log-step-static'}${party ? ` party-bg-${party}` : ''}${kind ? ` log-step-${kind}` : ''}`
   if (expandable) step.open = true
 
   const heading = document.createElement(expandable ? 'summary' : 'div')
   heading.className = 'section-heading'
-  heading.innerHTML = `<span class="step-label">${statusIndicatorHtml(status)}<span class="step-text">${applyPartyBadges(label)}</span></span>${expandable ? CHEVRON_SVG : ''}`
+  heading.innerHTML = `<span class="step-label">${kindBadgeHtml(kind)}${statusIndicatorHtml(status, kind)}<span class="step-text">${applyPartyBadges(label)}</span></span>${expandable ? CHEVRON_SVG : ''}`
   step.appendChild(heading)
 
   const body = document.createElement('div')
@@ -387,16 +397,17 @@ function addLogStep(label, status, content) {
 function resolveStep(step, status, label) {
   if (!step) return
   const isStatic = step.classList.contains('log-step-static')
+  const kind = step.classList.contains('log-step-response') ? 'response' : null
   // Re-derive party tint from the new label — most resolveStep calls
   // only flip status, but a few rewrite the label too (e.g. consent
   // prompt → "Interaction Completed"), and we want the tint to follow.
   const section = step.closest('details.log-section')
   const party = partyForLabel(label, section, previousStepBefore(step))
-  step.className = `log-step section-group ${status}${isStatic ? ' log-step-static' : ''}${party ? ` party-bg-${party}` : ''}`
-  const statusEl = step.querySelector('.step-status')
-  const textEl = step.querySelector('.step-text')
-  if (statusEl) statusEl.outerHTML = statusIndicatorHtml(status)
-  if (textEl) textEl.innerHTML = applyPartyBadges(label)
+  step.className = `log-step section-group ${status}${isStatic ? ' log-step-static' : ''}${party ? ` party-bg-${party}` : ''}${kind ? ` log-step-${kind}` : ''}`
+  const labelEl = step.querySelector('.step-label')
+  if (labelEl) {
+    labelEl.innerHTML = `${kindBadgeHtml(kind)}${statusIndicatorHtml(status, kind)}<span class="step-text">${applyPartyBadges(label)}</span>`
+  }
   persistActiveLog()
 }
 
@@ -497,7 +508,7 @@ function formatRequest(method, url, headers, body) {
     inner += renderJSON(body)
   }
   if (!inner) inner = `${escapeHtml(method)} ${escapeHtml(url)}`
-  return `<div class="token-label token-label-request">Request</div>${tokenWrap(inner)}`
+  return `<div class="token-label token-label-request">Request</div>${tokenWrap(inner, 'token-display-request')}`
 }
 
 function formatResponse(status, headers, body) {
@@ -510,7 +521,14 @@ function formatResponse(status, headers, body) {
   if (body) {
     inner += `\n${renderJSON(body)}`
   }
-  return `<div class="token-label token-label-response">Response</div>${tokenWrap(inner)}`
+  // Status indicator next to the "Response" caption — check for 2xx/3xx,
+  // X for 4xx/5xx — so the per-block outcome is visible right at the
+  // caption without scanning the JSON for the status code.
+  const isOk = status >= 200 && status < 400
+  const indicator = isOk
+    ? '<span class="step-status step-status-success"> ✓</span>'
+    : '<span class="step-status step-status-error"> ✗</span>'
+  return `<div class="token-label token-label-response">Response${indicator}</div>${tokenWrap(inner, 'token-display-response')}`
 }
 
 function formatToken(label, token, decoded, payloadLabel) {
@@ -869,7 +887,8 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
       addLogStep('Agent identity received', 'success',
         `<p>No scopes were requested, so whoami returned the agent's own identity straight from the agent_token — no Person Server exchange needed.</p>` +
         tokenWrap(renderJSON(body)) +
-        anotherRequestButton()
+        anotherRequestButton(),
+        { kind: 'response' }
       )
       return
     }
@@ -933,7 +952,8 @@ function showWhoamiAuthTokenReceived(authToken) {
   // above" copy would have nothing to point at.
   addLogStep('Auth Token received', 'success',
     `<p>The Person Server released an auth_token for the requested whoami scopes. The agent will use this to sign the next call to Whoami.</p>` +
-    formatDecoded(decodeJWTPayloadBrowser(authToken), 'auth_token payload')
+    formatDecoded(decodeJWTPayloadBrowser(authToken), 'auth_token payload'),
+    { kind: 'response' }
   )
 }
 
@@ -963,7 +983,8 @@ async function retryWhoami(whoamiUrl, whoamiPathDisplay, authToken, keyPair, sig
       addLogStep('Identity claims received', 'success',
         `<p>These are the claims the Person Server released for the scopes you granted. Compare them against the decoded auth_token payload above — whoami returns them verbatim from the token.</p>` +
         tokenWrap(renderJSON(body)) +
-        anotherRequestButton()
+        anotherRequestButton(),
+        { kind: 'response' }
       )
     } else {
       appendStepBody(step, formatResponse(res.status, null, body))
@@ -1490,7 +1511,8 @@ async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pol
         } else {
           addLogStep(copy('authorize.authorization_granted.label'), 'success',
             (body?.auth_token ? formatAuthToken(body.auth_token) : '') +
-            anotherRequestButton())
+            anotherRequestButton(),
+            { kind: 'response' })
         }
         return
       }
@@ -1500,7 +1522,8 @@ async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pol
         resolveStep(interactionStep, 'error', 'Interaction Expired')
         pinLog()
         addLogStep('Interaction expired', 'error',
-          formatResponse(404, null, body) + anotherRequestButton())
+          formatResponse(404, null, body) + anotherRequestButton(),
+          { kind: 'response' })
         return
       }
       if (res.status === 403 || res.status === 408) {
@@ -1510,7 +1533,8 @@ async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pol
         resolveStep(interactionStep, 'error', label)
         pinLog()
         addLogStep(copy(res.status === 403 ? 'authorize.authorization_denied.label' : 'authorize.authorization_timed_out.label'), 'error',
-          formatResponse(res.status, null, body) + anotherRequestButton())
+          formatResponse(res.status, null, body) + anotherRequestButton(),
+          { kind: 'response' })
         return
       }
       // 202 → loop immediately (server already held up to 30s)
@@ -1898,6 +1922,7 @@ async function finalizeNotesAuthToken(authToken) {
     desc('notes.auth_token_received') +
       formatDecoded(decodeJWTPayloadBrowser(authToken), 'auth_token payload') +
       anotherRequestButton(),
+    { kind: 'response' }
   )
   revealNotesApp()
   renderNotesApp()

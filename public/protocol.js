@@ -3176,11 +3176,14 @@
     const log = currentLog();
     if (log) log.classList.remove("hidden");
   }
-  function statusIndicatorHtml(status) {
+  function statusIndicatorHtml(status, kind) {
     if (status === "pending") {
       return '<span class="step-status step-status-pending"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>';
     }
-    if (status === "success") return "";
+    if (status === "success") {
+      if (kind === "response") return '<span class="step-status step-status-success">\u2713</span>';
+      return "";
+    }
     return '<span class="step-status step-status-error">\u2717</span>';
   }
   var CHEVRON_SVG = `<svg class="section-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>`;
@@ -3192,12 +3195,7 @@
     ["Whoami", "rs"]
   ];
   function applyPartyBadges(text) {
-    if (!text) return text;
-    let out = text;
-    for (const [name, key] of PARTY_BADGES) {
-      out = out.split(name).join(`<span class="party-badge party-${key}">${name}</span>`);
-    }
-    return out;
+    return text;
   }
   function partyFromClass(el) {
     if (!el?.classList) return null;
@@ -3255,7 +3253,11 @@
     const sections = log.querySelectorAll(":scope > details.log-section");
     return sections[sections.length - 1] || log;
   }
-  function addLogStep(label, status, content) {
+  function kindBadgeHtml(kind) {
+    if (kind === "response") return '<span class="step-kind step-kind-response">Response</span>';
+    return "";
+  }
+  function addLogStep(label, status, content, opts = {}) {
     const log = currentLog();
     if (!log) return null;
     showLog();
@@ -3263,11 +3265,12 @@
     const expandable = isExpandable(content);
     const step = expandable ? document.createElement("details") : document.createElement("div");
     const party = partyForLabel(label, target, previousStep(target));
-    step.className = `log-step section-group ${status}${expandable ? "" : " log-step-static"}${party ? ` party-bg-${party}` : ""}`;
+    const kind = opts.kind || null;
+    step.className = `log-step section-group ${status}${expandable ? "" : " log-step-static"}${party ? ` party-bg-${party}` : ""}${kind ? ` log-step-${kind}` : ""}`;
     if (expandable) step.open = true;
     const heading = document.createElement(expandable ? "summary" : "div");
     heading.className = "section-heading";
-    heading.innerHTML = `<span class="step-label">${statusIndicatorHtml(status)}<span class="step-text">${applyPartyBadges(label)}</span></span>${expandable ? CHEVRON_SVG : ""}`;
+    heading.innerHTML = `<span class="step-label">${kindBadgeHtml(kind)}${statusIndicatorHtml(status, kind)}<span class="step-text">${applyPartyBadges(label)}</span></span>${expandable ? CHEVRON_SVG : ""}`;
     step.appendChild(heading);
     const body = document.createElement("div");
     body.className = "log-step-body";
@@ -3283,13 +3286,14 @@
   function resolveStep(step, status, label) {
     if (!step) return;
     const isStatic = step.classList.contains("log-step-static");
+    const kind = step.classList.contains("log-step-response") ? "response" : null;
     const section = step.closest("details.log-section");
     const party = partyForLabel(label, section, previousStepBefore(step));
-    step.className = `log-step section-group ${status}${isStatic ? " log-step-static" : ""}${party ? ` party-bg-${party}` : ""}`;
-    const statusEl = step.querySelector(".step-status");
-    const textEl = step.querySelector(".step-text");
-    if (statusEl) statusEl.outerHTML = statusIndicatorHtml(status);
-    if (textEl) textEl.innerHTML = applyPartyBadges(label);
+    step.className = `log-step section-group ${status}${isStatic ? " log-step-static" : ""}${party ? ` party-bg-${party}` : ""}${kind ? ` log-step-${kind}` : ""}`;
+    const labelEl = step.querySelector(".step-label");
+    if (labelEl) {
+      labelEl.innerHTML = `${kindBadgeHtml(kind)}${statusIndicatorHtml(status, kind)}<span class="step-text">${applyPartyBadges(label)}</span>`;
+    }
     persistActiveLog();
   }
   function appendStepBody(step, html) {
@@ -3325,7 +3329,7 @@
       inner += renderJSON(body);
     }
     if (!inner) inner = `${escapeHtml(method)} ${escapeHtml(url)}`;
-    return `<div class="token-label token-label-request">Request</div>${tokenWrap(inner)}`;
+    return `<div class="token-label token-label-request">Request</div>${tokenWrap(inner, "token-display-request")}`;
   }
   function formatResponse(status, headers, body) {
     let inner = `HTTP ${status}
@@ -3340,7 +3344,9 @@
       inner += `
 ${renderJSON(body)}`;
     }
-    return `<div class="token-label token-label-response">Response</div>${tokenWrap(inner)}`;
+    const isOk = status >= 200 && status < 400;
+    const indicator = isOk ? '<span class="step-status step-status-success"> \u2713</span>' : '<span class="step-status step-status-error"> \u2717</span>';
+    return `<div class="token-label token-label-response">Response${indicator}</div>${tokenWrap(inner, "token-display-response")}`;
   }
   function formatDecoded(decoded, label = "payload") {
     return `
@@ -3578,7 +3584,8 @@ ${renderJSON(body)}`;
         addLogStep(
           "Agent identity received",
           "success",
-          `<p>No scopes were requested, so whoami returned the agent's own identity straight from the agent_token \u2014 no Person Server exchange needed.</p>` + tokenWrap(renderJSON(body)) + anotherRequestButton()
+          `<p>No scopes were requested, so whoami returned the agent's own identity straight from the agent_token \u2014 no Person Server exchange needed.</p>` + tokenWrap(renderJSON(body)) + anotherRequestButton(),
+          { kind: "response" }
         );
         return;
       }
@@ -3625,7 +3632,8 @@ ${renderJSON(body)}`;
     addLogStep(
       "Auth Token received",
       "success",
-      `<p>The Person Server released an auth_token for the requested whoami scopes. The agent will use this to sign the next call to Whoami.</p>` + formatDecoded(decodeJWTPayloadBrowser(authToken), "auth_token payload")
+      `<p>The Person Server released an auth_token for the requested whoami scopes. The agent will use this to sign the next call to Whoami.</p>` + formatDecoded(decodeJWTPayloadBrowser(authToken), "auth_token payload"),
+      { kind: "response" }
     );
   }
   async function retryWhoami(whoamiUrl, whoamiPathDisplay, authToken, keyPair, signingJwk) {
@@ -3652,7 +3660,8 @@ ${renderJSON(body)}`;
         addLogStep(
           "Identity claims received",
           "success",
-          `<p>These are the claims the Person Server released for the scopes you granted. Compare them against the decoded auth_token payload above \u2014 whoami returns them verbatim from the token.</p>` + tokenWrap(renderJSON(body)) + anotherRequestButton()
+          `<p>These are the claims the Person Server released for the scopes you granted. Compare them against the decoded auth_token payload above \u2014 whoami returns them verbatim from the token.</p>` + tokenWrap(renderJSON(body)) + anotherRequestButton(),
+          { kind: "response" }
         );
       } else {
         appendStepBody(step, formatResponse(res.status, null, body));
@@ -4035,7 +4044,8 @@ ${renderJSON(body)}`;
             addLogStep(
               copy("authorize.authorization_granted.label"),
               "success",
-              (body?.auth_token ? formatAuthToken(body.auth_token) : "") + anotherRequestButton()
+              (body?.auth_token ? formatAuthToken(body.auth_token) : "") + anotherRequestButton(),
+              { kind: "response" }
             );
           }
           return;
@@ -4048,7 +4058,8 @@ ${renderJSON(body)}`;
           addLogStep(
             "Interaction expired",
             "error",
-            formatResponse(404, null, body) + anotherRequestButton()
+            formatResponse(404, null, body) + anotherRequestButton(),
+            { kind: "response" }
           );
           return;
         }
@@ -4061,7 +4072,8 @@ ${renderJSON(body)}`;
           addLogStep(
             copy(res.status === 403 ? "authorize.authorization_denied.label" : "authorize.authorization_timed_out.label"),
             "error",
-            formatResponse(res.status, null, body) + anotherRequestButton()
+            formatResponse(res.status, null, body) + anotherRequestButton(),
+            { kind: "response" }
           );
           return;
         }
@@ -4366,7 +4378,8 @@ ${renderJSON(body)}`;
     addLogStep(
       copy("notes.auth_token_received.label"),
       "success",
-      desc("notes.auth_token_received") + formatDecoded(decodeJWTPayloadBrowser(authToken), "auth_token payload") + anotherRequestButton()
+      desc("notes.auth_token_received") + formatDecoded(decodeJWTPayloadBrowser(authToken), "auth_token payload") + anotherRequestButton(),
+      { kind: "response" }
     );
     revealNotesApp();
     renderNotesApp();
