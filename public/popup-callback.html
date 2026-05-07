@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>AAuth — Closing</title>
+  <style>
+    body {
+      font-family: 'IBM Plex Mono', ui-monospace, monospace;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 1rem;
+      text-align: center;
+    }
+    p { max-width: 28ch; }
+  </style>
+</head>
+<body>
+  <p>Consent recorded. You can close this window.</p>
+  <script>
+    // PS redirected this popup back here after consent. Self-close — the
+    // parent's PS long-poll is concurrently returning 200 with auth_token,
+    // so the parent doesn't need any signal from the popup.
+    //
+    // The fallback message above stays visible if window.close() is
+    // refused (popups not opened by script can't self-close, but ours
+    // was opened by script so this should always work).
+    try { window.close() } catch {}
+  </script>
+</body>
+</html>

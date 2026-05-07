@@ -995,11 +995,12 @@ function renderInteraction(interaction, pollUrl, kind = 'bootstrap') {
     ? copy('ui.approve_at_ps.authorize_heading')
     : copy('ui.approve_at_ps.bootstrap_heading')
 
-  const callbackUrl = `${window.location.origin}/`
-  // Same-device URL: include ?callback= so the PS redirects the user back
-  // here after consent. QR-code URL: omit it — the other device can't
-  // redirect back to this browser anyway, and a shorter URL makes a
-  // denser, more scannable code.
+  // Popup callback target — a tiny static page that calls window.close().
+  // Parent never navigates in popup mode; PS still long-polls in parallel
+  // and surfaces the auth_token to the parent independently of any popup
+  // ↔ parent communication. QR-code URL still omits ?callback= for
+  // compactness — scanning to a phone has its own self-close UX in PS.
+  const callbackUrl = `${window.location.origin}/popup-callback`
   const sameDeviceUrl = `${interaction.url}?code=${encodeURIComponent(interaction.code)}&callback=${encodeURIComponent(callbackUrl)}`
   const qrUrl = `${interaction.url}?code=${encodeURIComponent(interaction.code)}`
   const qrId = `qr-${Math.random().toString(36).slice(2, 9)}`
@@ -2183,12 +2184,36 @@ document.getElementById('bootstrap-btn')?.addEventListener('click', startBootstr
 document.getElementById('whoami-btn')?.addEventListener('click', startWhoami)
 document.getElementById('notes-btn')?.addEventListener('click', startNotes)
 
-// Hellō Continue button — swap to loader state on click so the user
-// sees immediate feedback while the same-tab redirect navigates away.
+// Hellō Continue button — open PS in a popup so the parent keeps its
+// log, ephemeral key, and long-poll state alive across consent. Source
+// of truth is still the parent's existing PS long-poll; the popup just
+// closes itself when /popup-callback is reached.
+//
+// Critical: window.open() must be called synchronously inside the click
+// handler — no `await` before it — or iOS Safari silently blocks under
+// transient-activation rules.
 document.addEventListener('click', (e) => {
   const helloBtn = e.target.closest('.interaction-actions .hello-btn')
-  if (helloBtn) helloBtn.classList.add('hello-btn-loader')
+  if (!helloBtn) return
+  e.preventDefault()
+  const url = helloBtn.getAttribute('href')
+  const popup = window.open(url, 'aauth-consent')
+  if (popup === null) {
+    showPopupBlockedMessage(helloBtn)
+    return
+  }
+  helloBtn.classList.add('hello-btn-loader')
 })
+
+function showPopupBlockedMessage(btn) {
+  const container = btn.closest('.interaction-actions')
+  if (!container) return
+  if (container.querySelector('.popup-blocked-msg')) return
+  const msg = document.createElement('p')
+  msg.className = 'popup-blocked-msg'
+  msg.textContent = 'Popup blocked. Allow popups for this site and click Continue again.'
+  container.appendChild(msg)
+}
 
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.js-scroll-authz')

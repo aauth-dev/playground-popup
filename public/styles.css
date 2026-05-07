@@ -1036,6 +1036,12 @@ details.log-section + details.log-section {
   gap: 0.4rem;
   margin: 0.75rem 0;
 }
+.popup-blocked-msg {
+  margin: 0.5rem 0 0;
+  color: var(--error);
+  font-size: 0.85rem;
+  text-align: center;
+}
 .interaction-link {
   display: inline-block;
   background: #40d97b;

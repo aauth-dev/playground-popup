@@ -3684,7 +3684,7 @@ ${renderJSON(body)}`;
       return `<p style="color: var(--muted);">Interaction required but missing: ${escapeHtml(missing.join(", "))}.</p>`;
     }
     const heading = kind === "authorize" ? copy("ui.approve_at_ps.authorize_heading") : copy("ui.approve_at_ps.bootstrap_heading");
-    const callbackUrl = `${window.location.origin}/`;
+    const callbackUrl = `${window.location.origin}/popup-callback`;
     const sameDeviceUrl = `${interaction.url}?code=${encodeURIComponent(interaction.code)}&callback=${encodeURIComponent(callbackUrl)}`;
     const qrUrl = `${interaction.url}?code=${encodeURIComponent(interaction.code)}`;
     const qrId = `qr-${Math.random().toString(36).slice(2, 9)}`;
@@ -4612,8 +4612,25 @@ ${renderJSON(body)}`;
   document.getElementById("notes-btn")?.addEventListener("click", startNotes);
   document.addEventListener("click", (e) => {
     const helloBtn = e.target.closest(".interaction-actions .hello-btn");
-    if (helloBtn) helloBtn.classList.add("hello-btn-loader");
+    if (!helloBtn) return;
+    e.preventDefault();
+    const url = helloBtn.getAttribute("href");
+    const popup = window.open(url, "aauth-consent");
+    if (popup === null) {
+      showPopupBlockedMessage(helloBtn);
+      return;
+    }
+    helloBtn.classList.add("hello-btn-loader");
   });
+  function showPopupBlockedMessage(btn) {
+    const container = btn.closest(".interaction-actions");
+    if (!container) return;
+    if (container.querySelector(".popup-blocked-msg")) return;
+    const msg = document.createElement("p");
+    msg.className = "popup-blocked-msg";
+    msg.textContent = "Popup blocked. Allow popups for this site and click Continue again.";
+    container.appendChild(msg);
+  }
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".js-scroll-authz");
     if (!btn) return;
