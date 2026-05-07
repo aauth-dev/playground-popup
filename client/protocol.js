@@ -2192,12 +2192,22 @@ document.getElementById('notes-btn')?.addEventListener('click', startNotes)
 // Critical: window.open() must be called synchronously inside the click
 // handler — no `await` before it — or iOS Safari silently blocks under
 // transient-activation rules.
+//
+// The features string (width/height/left/top) is what tells the browser
+// to render this as a popup window rather than a new tab. Without
+// dimensions, Chrome/Firefox/Safari all open a tab. On mobile this still
+// becomes a new tab regardless — phones don't have side-by-side windows.
+const POPUP_WIDTH = 500
+const POPUP_HEIGHT = 700
 document.addEventListener('click', (e) => {
   const helloBtn = e.target.closest('.interaction-actions .hello-btn')
   if (!helloBtn) return
   e.preventDefault()
   const url = helloBtn.getAttribute('href')
-  const popup = window.open(url, 'aauth-consent')
+  const left = Math.max(0, Math.round((screen.width - POPUP_WIDTH) / 2))
+  const top = Math.max(0, Math.round((screen.height - POPUP_HEIGHT) / 2))
+  const features = `popup=yes,width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top}`
+  const popup = window.open(url, 'aauth-consent', features)
   if (popup === null) {
     showPopupBlockedMessage(helloBtn)
     return
