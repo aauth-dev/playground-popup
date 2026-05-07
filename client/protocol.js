@@ -2215,17 +2215,9 @@ document.addEventListener('click', (e) => {
     showPopupBlockedMessage(helloBtn)
     return
   }
-  helloBtn.classList.add('hello-btn-loader')
-  // Clear the loader once the popup is gone — covers both
-  // /popup-callback's self-close after consent and the user closing it
-  // manually. In same-tab mode the page navigated away so the loader
-  // was naturally invisible; here it would otherwise spin forever.
-  const watcher = setInterval(() => {
-    if (popup.closed) {
-      clearInterval(watcher)
-      helloBtn.classList.remove('hello-btn-loader')
-    }
-  }, 250)
+  // No loader — the popup window itself is the in-progress feedback.
+  // (Same-tab mode showed a spinner because the page was navigating
+  // away; here the parent stays put and the user can see the popup.)
 })
 
 function showPopupBlockedMessage(btn) {
