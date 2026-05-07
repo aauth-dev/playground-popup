@@ -2235,15 +2235,14 @@ document.getElementById('notes-btn')?.addEventListener('click', startNotes)
 // becomes a new tab regardless — phones don't have side-by-side windows.
 const POPUP_WIDTH = 500
 const POPUP_HEIGHT = 700
-const POPUP_RIGHT_MARGIN = 40
 document.addEventListener('click', (e) => {
   const helloBtn = e.target.closest('.interaction-actions .hello-btn')
   if (!helloBtn) return
   e.preventDefault()
   const url = helloBtn.getAttribute('href')
-  // Anchor right-of-center so the playground log on the left stays
-  // visible while consent runs in the popup. Vertically centered.
-  const left = Math.max(0, screen.width - POPUP_WIDTH - POPUP_RIGHT_MARGIN)
+  // Center the popup on both axes so consent reads as a modal over
+  // the playground rather than a side panel.
+  const left = Math.max(0, Math.round((screen.width - POPUP_WIDTH) / 2))
   const top = Math.max(0, Math.round((screen.height - POPUP_HEIGHT) / 2))
   const features = `popup=yes,width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top}`
   const popup = window.open(url, 'aauth-consent', features)
