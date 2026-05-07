@@ -1,4 +1,4 @@
-name = "playground-aauth-dev"
+name = "playground-popup"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
 # @hellocoop/httpsig references `Buffer` in signature.js (a Node built-in);
