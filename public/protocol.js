@@ -3180,11 +3180,7 @@
     if (status === "pending") {
       return '<span class="step-status step-status-pending"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>';
     }
-    if (status === "success") {
-      if (kind === "response") return '<span class="step-status step-status-success">\u2713</span>';
-      return "";
-    }
-    return '<span class="step-status step-status-error">\u2717</span>';
+    return "";
   }
   var CHEVRON_SVG = `<svg class="section-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>`;
   var PARTY_BADGES = [

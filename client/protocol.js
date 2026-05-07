@@ -236,17 +236,11 @@ function statusIndicatorHtml(status, kind) {
   if (status === 'pending') {
     return '<span class="step-status step-status-pending"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>'
   }
-  // Request-line steps suppress the success check \u2014 the green left
-  // border + "\u2192 <2xx>" suffix already convey the outcome, and a check
-  // beside the request line reads as if the request itself succeeded
-  // rather than a response coming back. Response-kind steps DO get
-  // the check, since that's where the success-of-the-response actually
-  // belongs.
-  if (status === 'success') {
-    if (kind === 'response') return '<span class="step-status step-status-success">\u2713</span>'
-    return ''
-  }
-  return '<span class="step-status step-status-error">\u2717</span>'
+  // Outcome (success / error) is conveyed entirely by the step's
+  // left-border color (green / red). A check or X glyph beside the
+  // heading would duplicate that signal, so terminal states render
+  // no indicator \u2014 only in-progress steps show the pulsing dots.
+  return ''
 }
 
 const CHEVRON_SVG = `<svg class="section-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>`
