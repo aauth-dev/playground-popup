@@ -59,40 +59,201 @@
     }
   });
 
+  // node_modules/@hellocoop/httpsig/dist/errors.js
+  var require_errors = __commonJS({
+    "node_modules/@hellocoop/httpsig/dist/errors.js"(exports) {
+      "use strict";
+      Object.defineProperty(exports, "__esModule", { value: true });
+      exports.SignatureVerificationError = void 0;
+      exports.invalidKey = invalidKey;
+      exports.unsupportedAlgorithm = unsupportedAlgorithm;
+      exports.unsupportedScheme = unsupportedScheme;
+      exports.invalidJwt = invalidJwt;
+      exports.issuerMissing = issuerMissing;
+      exports.issuerMismatch = issuerMismatch;
+      exports.expiredJwt = expiredJwt;
+      exports.invalidInput = invalidInput;
+      var SignatureVerificationError = class extends Error {
+        code;
+        requiredInput;
+        supportedAlgorithms;
+        constructor(code, message, options = {}) {
+          super(message, { cause: options.cause });
+          this.name = "SignatureVerificationError";
+          this.code = code;
+          this.requiredInput = options.requiredInput;
+          this.supportedAlgorithms = options.supportedAlgorithms;
+        }
+      };
+      exports.SignatureVerificationError = SignatureVerificationError;
+      function invalidKey(message) {
+        return new SignatureVerificationError("invalid_key", message);
+      }
+      function unsupportedAlgorithm(message, supportedAlgorithms) {
+        return new SignatureVerificationError("unsupported_algorithm", message, {
+          supportedAlgorithms
+        });
+      }
+      function unsupportedScheme(message) {
+        return new SignatureVerificationError("unsupported_scheme", message);
+      }
+      function invalidJwt(message) {
+        return new SignatureVerificationError("invalid_jwt", message);
+      }
+      function issuerMissing(message) {
+        return new SignatureVerificationError("issuer_missing", message);
+      }
+      function issuerMismatch(message) {
+        return new SignatureVerificationError("issuer_mismatch", message);
+      }
+      function expiredJwt(message) {
+        return new SignatureVerificationError("expired_jwt", message);
+      }
+      function invalidInput(message, requiredInput) {
+        return new SignatureVerificationError("invalid_input", message, {
+          requiredInput
+        });
+      }
+    }
+  });
+
   // node_modules/@hellocoop/httpsig/dist/utils/crypto.js
   var require_crypto = __commonJS({
     "node_modules/@hellocoop/httpsig/dist/utils/crypto.js"(exports) {
       "use strict";
       Object.defineProperty(exports, "__esModule", { value: true });
+      exports.UNIMPLEMENTED_ALGORITHMS = exports.SYMMETRIC_ALGORITHMS = exports.POLYMORPHIC_ALGORITHMS = exports.SUPPORTED_ALGORITHMS = exports.FULLY_SPECIFIED_ALGORITHMS = void 0;
+      exports.determineAlgorithm = determineAlgorithm;
       exports.getAlgorithmFromJwk = getAlgorithmFromJwk;
+      exports.validateJwk = validateJwk;
       exports.importPrivateKey = importPrivateKey;
       exports.importPublicKey = importPublicKey;
       exports.getPublicJwk = getPublicJwk;
       exports.sign = sign;
       exports.verify = verify;
       exports.generateKeyPair = generateKeyPair;
-      exports.validateJwk = validateJwk;
+      var errors_js_1 = require_errors();
+      exports.FULLY_SPECIFIED_ALGORITHMS = {
+        Ed25519: {
+          kty: "OKP",
+          crv: "Ed25519",
+          params: { name: "Ed25519" }
+        },
+        Ed448: {
+          kty: "OKP",
+          crv: "Ed448",
+          params: { name: "Ed448" }
+        },
+        ES256: {
+          kty: "EC",
+          crv: "P-256",
+          params: { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256" }
+        },
+        ES384: {
+          kty: "EC",
+          crv: "P-384",
+          params: { name: "ECDSA", namedCurve: "P-384", hash: "SHA-384" }
+        },
+        ES512: {
+          kty: "EC",
+          crv: "P-521",
+          params: { name: "ECDSA", namedCurve: "P-521", hash: "SHA-512" }
+        },
+        PS256: {
+          kty: "RSA",
+          params: { name: "RSA-PSS", hash: "SHA-256", saltLength: 32 }
+        },
+        PS384: {
+          kty: "RSA",
+          params: { name: "RSA-PSS", hash: "SHA-384", saltLength: 48 }
+        },
+        PS512: {
+          kty: "RSA",
+          params: { name: "RSA-PSS", hash: "SHA-512", saltLength: 64 }
+        },
+        RS256: {
+          kty: "RSA",
+          params: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }
+        },
+        RS384: {
+          kty: "RSA",
+          params: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-384" }
+        },
+        RS512: {
+          kty: "RSA",
+          params: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-512" }
+        }
+      };
+      exports.SUPPORTED_ALGORITHMS = Object.freeze(Object.keys(exports.FULLY_SPECIFIED_ALGORITHMS));
+      exports.POLYMORPHIC_ALGORITHMS = /* @__PURE__ */ new Set(["EdDSA"]);
+      exports.SYMMETRIC_ALGORITHMS = /* @__PURE__ */ new Set([
+        "HS256",
+        "HS384",
+        "HS512",
+        "hmac-sha256"
+      ]);
+      exports.UNIMPLEMENTED_ALGORITHMS = /* @__PURE__ */ new Set([
+        "ML-DSA-44",
+        "ML-DSA-65",
+        "ML-DSA-87"
+      ]);
+      var REQUIRED_MEMBERS = {
+        OKP: ["crv", "x"],
+        EC: ["crv", "x", "y"],
+        RSA: ["n", "e"]
+      };
+      function determineAlgorithm(jwk) {
+        if (!jwk || typeof jwk !== "object") {
+          throw (0, errors_js_1.invalidKey)("JWK is not an object");
+        }
+        if (!jwk.kty) {
+          throw (0, errors_js_1.invalidKey)("JWK missing required member: kty");
+        }
+        if (jwk.kty === "oct") {
+          throw (0, errors_js_1.invalidKey)('Symmetric keys are not permitted: kty "oct" names a shared secret');
+        }
+        const alg = jwk.alg;
+        if (!alg) {
+          throw (0, errors_js_1.invalidKey)("JWK missing required member: alg. The algorithm is taken from the key and is not derived from kty and crv");
+        }
+        if (exports.SYMMETRIC_ALGORITHMS.has(alg)) {
+          throw (0, errors_js_1.invalidKey)(`Symmetric algorithms are not permitted: "${alg}" names a shared secret`);
+        }
+        if (exports.POLYMORPHIC_ALGORITHMS.has(alg)) {
+          throw (0, errors_js_1.invalidKey)(`Polymorphic algorithm identifier "${alg}" is not permitted. Use a fully-specified identifier such as Ed25519 or Ed448 (RFC 9864)`);
+        }
+        if (jwk.kty === "AKP" || exports.UNIMPLEMENTED_ALGORITHMS.has(alg)) {
+          throw (0, errors_js_1.unsupportedAlgorithm)(`Algorithm "${alg}" (kty "${jwk.kty}") is not implemented by this verifier`);
+        }
+        const spec = exports.FULLY_SPECIFIED_ALGORITHMS[alg];
+        if (!spec) {
+          throw (0, errors_js_1.unsupportedAlgorithm)(`Unsupported or not fully-specified algorithm: "${alg}"`);
+        }
+        if (jwk.kty !== spec.kty) {
+          throw (0, errors_js_1.invalidKey)(`JWK kty "${jwk.kty}" is inconsistent with alg "${alg}", which requires kty "${spec.kty}"`);
+        }
+        if (spec.crv && jwk.crv !== spec.crv) {
+          throw (0, errors_js_1.invalidKey)(`JWK crv "${jwk.crv}" is inconsistent with alg "${alg}", which requires crv "${spec.crv}"`);
+        }
+        for (const member of REQUIRED_MEMBERS[spec.kty] ?? []) {
+          if (!jwk[member]) {
+            throw (0, errors_js_1.invalidKey)(`${spec.kty} JWK missing required member: ${member}`);
+          }
+        }
+        return spec.params;
+      }
       function getAlgorithmFromJwk(jwk) {
-        if (jwk.kty === "OKP") {
-          if (jwk.crv === "Ed25519") {
-            return { name: "Ed25519" };
-          }
-          throw new Error(`Unsupported OKP curve: ${jwk.crv}`);
-        }
-        if (jwk.kty === "EC") {
-          if (jwk.crv === "P-256") {
-            return { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256" };
-          }
-          throw new Error(`Unsupported EC curve: ${jwk.crv}`);
-        }
-        throw new Error(`Unsupported key type: ${jwk.kty}`);
+        return determineAlgorithm(jwk);
+      }
+      function validateJwk(jwk) {
+        determineAlgorithm(jwk);
       }
       async function importPrivateKey(jwk) {
-        const algorithm = getAlgorithmFromJwk(jwk);
+        const algorithm = determineAlgorithm(jwk);
         return await crypto.subtle.importKey("jwk", jwk, algorithm, false, ["sign"]);
       }
       async function importPublicKey(jwk) {
-        const algorithm = getAlgorithmFromJwk(jwk);
+        const algorithm = determineAlgorithm(jwk);
         return await crypto.subtle.importKey("jwk", jwk, algorithm, false, [
           "verify"
         ]);
@@ -111,41 +272,18 @@
       async function generateKeyPair(options) {
         const algorithm = options?.algorithm ?? "Ed25519";
         const extractable = options?.extractable ?? true;
-        let genAlgorithm;
-        let keyUsages = ["sign", "verify"];
-        if (algorithm === "Ed25519") {
-          genAlgorithm = { name: "Ed25519" };
-        } else if (algorithm === "ES256") {
-          genAlgorithm = { name: "ECDSA", namedCurve: "P-256" };
-        } else {
+        const spec = exports.FULLY_SPECIFIED_ALGORITHMS[algorithm];
+        if (!spec) {
           throw new Error(`Unsupported algorithm: ${algorithm}`);
         }
-        const keyPair = await crypto.subtle.generateKey(genAlgorithm, extractable, keyUsages);
+        const genAlgorithm = spec.crv ? spec.params.name === "ECDSA" ? { name: "ECDSA", namedCurve: spec.crv } : { name: spec.params.name } : { name: spec.params.name };
+        const keyPair = await crypto.subtle.generateKey(genAlgorithm, extractable, ["sign", "verify"]);
         const publicKey = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+        publicKey.alg = algorithm;
         return {
           privateKey: keyPair.privateKey,
           publicKey
         };
-      }
-      function validateJwk(jwk) {
-        if (!jwk.kty) {
-          throw new Error("JWK missing required field: kty");
-        }
-        if (jwk.kty === "OKP") {
-          if (!jwk.crv)
-            throw new Error("OKP JWK missing required field: crv");
-          if (!jwk.x)
-            throw new Error("OKP JWK missing required field: x");
-        } else if (jwk.kty === "EC") {
-          if (!jwk.crv)
-            throw new Error("EC JWK missing required field: crv");
-          if (!jwk.x)
-            throw new Error("EC JWK missing required field: x");
-          if (!jwk.y)
-            throw new Error("EC JWK missing required field: y");
-        } else {
-          throw new Error(`Unsupported key type: ${jwk.kty}`);
-        }
       }
     }
   });
@@ -224,10 +362,15 @@
       exports.parseSignatureKey = parseSignatureKey;
       exports.generateSignatureErrorHeader = generateSignatureErrorHeader;
       exports.parseSignatureError = parseSignatureError;
+      exports.generateAcceptSignatureSchemeHeader = generateAcceptSignatureSchemeHeader;
+      exports.parseAcceptSignatureScheme = parseAcceptSignatureScheme;
+      exports.generateAcceptSignatureAlgHeader = generateAcceptSignatureAlgHeader;
+      exports.parseAcceptSignatureAlg = parseAcceptSignatureAlg;
       exports.generateAcceptSignatureHeader = generateAcceptSignatureHeader;
       exports.parseAcceptSignature = parseAcceptSignature;
       exports.parseSignature = parseSignature;
       var base64_js_1 = require_base64();
+      var errors_js_1 = require_errors();
       function generateSignatureBase(components, componentValues) {
         const lines = [];
         for (const component of components) {
@@ -248,7 +391,13 @@
           if (!publicJwk) {
             throw new Error("Public JWK required for hwk signature key type");
           }
-          const params = [`kty="${publicJwk.kty}"`];
+          if (!publicJwk.alg) {
+            throw new Error("Public JWK missing required alg member for hwk signature key type");
+          }
+          const params = [
+            `alg="${publicJwk.alg}"`,
+            `kty="${publicJwk.kty}"`
+          ];
           if (publicJwk.crv)
             params.push(`crv="${publicJwk.crv}"`);
           if (publicJwk.x)
@@ -353,12 +502,18 @@
             params[key] = value;
           }
         }
-        if (!["hwk", "jwt", "jkt-jwt", "jwks_uri", "x509"].includes(scheme)) {
-          throw new Error(`Unsupported Signature-Key scheme: ${scheme}`);
+        if (!["hwk", "jwt", "jkt-jwt", "jwks_uri"].includes(scheme)) {
+          throw (0, errors_js_1.unsupportedScheme)(`Unsupported Signature-Key scheme: ${scheme}`);
         }
         if (scheme === "hwk") {
           if (!params.kty) {
-            throw new Error("Signature-Key hwk scheme missing kty parameter");
+            throw (0, errors_js_1.invalidKey)("Signature-Key hwk scheme missing kty parameter");
+          }
+          if (!params.alg) {
+            throw (0, errors_js_1.invalidKey)("Signature-Key hwk scheme missing alg parameter");
+          }
+          if (params.kid !== void 0) {
+            throw (0, errors_js_1.invalidKey)("Signature-Key hwk scheme MUST NOT include a kid parameter");
           }
           return [{ label, type: "hwk", value: params }];
         }
@@ -402,14 +557,10 @@
             }
           ];
         }
-        throw new Error(`Unsupported Signature-Key scheme: ${scheme}`);
+        throw (0, errors_js_1.unsupportedScheme)(`Unsupported Signature-Key scheme: ${scheme}`);
       }
       function generateSignatureErrorHeader(signatureError) {
         const parts = [`error=${signatureError.error}`];
-        if (signatureError.supported_algorithms) {
-          const algList = signatureError.supported_algorithms.map((a) => `"${a}"`).join(" ");
-          parts.push(`supported_algorithms=(${algList})`);
-        }
         if (signatureError.required_input) {
           const inputList = signatureError.required_input.map((c) => `"${c}"`).join(" ");
           parts.push(`required_input=(${inputList})`);
@@ -425,35 +576,54 @@
         const error = errorMatch[1];
         const validCodes = [
           "unsupported_algorithm",
+          "unsupported_scheme",
           "invalid_signature",
           "invalid_input",
           "invalid_request",
           "invalid_key",
           "unknown_key",
           "invalid_jwt",
-          "expired_jwt"
+          "expired_jwt",
+          "issuer_missing",
+          "issuer_mismatch"
         ];
         if (!validCodes.includes(error)) {
           throw new Error(`Invalid Signature-Error code: ${error}`);
         }
         const result = { error };
-        const algMatch = trimmed.match(/supported_algorithms=\(([^)]*)\)/);
-        if (algMatch) {
-          result.supported_algorithms = algMatch[1].split(/\s+/).map((a) => a.replace(/"/g, "")).filter((a) => a);
-        }
         const inputMatch = trimmed.match(/required_input=\(([^)]*)\)/);
         if (inputMatch) {
           result.required_input = inputMatch[1].split(/\s+/).map((c) => c.replace(/"/g, "")).filter((c) => c);
         }
         return result;
       }
+      function generateTokenList(values) {
+        for (const value of values) {
+          if (!/^[A-Za-z*][A-Za-z0-9!#$%&'*+\-.^_`|~:/]*$/.test(value)) {
+            throw new Error(`Value is not a valid Structured Field Token: ${value}`);
+          }
+        }
+        return values.join(", ");
+      }
+      function parseTokenList(header) {
+        return header.split(",").map((v) => v.trim()).filter((v) => /^[A-Za-z*][A-Za-z0-9!#$%&'*+\-.^_`|~:/]*$/.test(v));
+      }
+      function generateAcceptSignatureSchemeHeader(schemes) {
+        return generateTokenList(schemes);
+      }
+      function parseAcceptSignatureScheme(header) {
+        return parseTokenList(header);
+      }
+      function generateAcceptSignatureAlgHeader(algs) {
+        return generateTokenList(algs);
+      }
+      function parseAcceptSignatureAlg(header) {
+        return parseTokenList(header);
+      }
       function generateAcceptSignatureHeader(params) {
-        const { label = "sig", components, sigkey, alg, tag } = params;
+        const { label = "sig", components, alg, tag } = params;
         const componentList = components.map((c) => `"${c}"`).join(" ");
         let header = `${label}=(${componentList})`;
-        if (sigkey) {
-          header += `;sigkey=${sigkey}`;
-        }
         if (alg) {
           header += `;alg="${alg}"`;
         }
@@ -474,13 +644,6 @@
         const components = componentsStr.split(/\s+/).map((c) => c.replace(/"/g, "")).filter((c) => c);
         const result = { label, components };
         if (paramsStr) {
-          const sigkeyMatch = paramsStr.match(/;sigkey=([\w]+)/);
-          if (sigkeyMatch) {
-            const value = sigkeyMatch[1];
-            if (["jkt", "uri", "x509"].includes(value)) {
-              result.sigkey = value;
-            }
-          }
           const algMatch = paramsStr.match(/;alg="([^"]*)"/);
           if (algMatch) {
             result.alg = algMatch[1];
@@ -555,7 +718,7 @@
         }
       }
       async function fetch2(url, options) {
-        const { signingKey, signingCryptoKey, signatureKey, label = "sig", components: customComponents, dryRun = false, method = "GET", headers: inputHeaders = {}, body, ...fetchOptions } = options;
+        const { signingKey, signingCryptoKey, signatureKey, label = "sig", components: customComponents, dryRun = false, returnSent = false, method = "GET", headers: inputHeaders = {}, body, ...fetchOptions } = options;
         (0, crypto_js_1.validateJwk)(signingKey);
         let privateKey;
         let algorithm;
@@ -647,12 +810,24 @@
         if (dryRun) {
           return { headers };
         }
-        return globalThis.fetch(urlObj, {
+        const response = await globalThis.fetch(urlObj, {
           ...fetchOptions,
           method,
           headers,
           body
         });
+        if (returnSent) {
+          return {
+            response,
+            sent: {
+              method,
+              url: urlObj.href,
+              headers,
+              body: body ?? null
+            }
+          };
+        }
+        return response;
       }
     }
   });
@@ -690,6 +865,17 @@
             });
             break;
           }
+          case "RSA": {
+            if (!jwk.e || !jwk.n) {
+              throw new Error("RSA key missing required fields (e, n)");
+            }
+            canonical = JSON.stringify({
+              e: jwk.e,
+              kty: jwk.kty,
+              n: jwk.n
+            });
+            break;
+          }
           default:
             throw new Error(`Unsupported key type: ${jwk.kty}`);
         }
@@ -697,6 +883,71 @@
         const hash = await hashFn(canonical);
         return (0, base64_js_1.base64urlEncode)(hash);
       }
+    }
+  });
+
+  // node_modules/@hellocoop/httpsig/dist/utils/cache.js
+  var require_cache = __commonJS({
+    "node_modules/@hellocoop/httpsig/dist/utils/cache.js"(exports) {
+      "use strict";
+      Object.defineProperty(exports, "__esModule", { value: true });
+      exports.BoundedTtlCache = exports.DEFAULT_MAX_ENTRIES = void 0;
+      exports.DEFAULT_MAX_ENTRIES = 100;
+      var BoundedTtlCache = class {
+        entries = /* @__PURE__ */ new Map();
+        maxEntries;
+        constructor(maxEntries = exports.DEFAULT_MAX_ENTRIES) {
+          if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+            throw new Error("maxEntries must be a positive integer");
+          }
+          this.maxEntries = maxEntries;
+        }
+        get size() {
+          return this.entries.size;
+        }
+        get(key) {
+          const entry = this.entries.get(key);
+          if (!entry) {
+            return void 0;
+          }
+          if (entry.expiresAt <= Date.now()) {
+            this.entries.delete(key);
+            return void 0;
+          }
+          this.entries.delete(key);
+          this.entries.set(key, entry);
+          return entry.value;
+        }
+        set(key, value, ttlMs) {
+          this.entries.delete(key);
+          if (this.entries.size >= this.maxEntries) {
+            this.evictOne();
+          }
+          this.entries.set(key, { value, expiresAt: Date.now() + ttlMs });
+        }
+        clear() {
+          this.entries.clear();
+        }
+        /**
+         * Drop an expired entry if there is one, otherwise the least recently
+         * used. Preferring expired entries keeps live ones around longer without
+         * changing the bound.
+         */
+        evictOne() {
+          const now = Date.now();
+          for (const [key, entry] of this.entries) {
+            if (entry.expiresAt <= now) {
+              this.entries.delete(key);
+              return;
+            }
+          }
+          const oldest = this.entries.keys().next();
+          if (!oldest.done) {
+            this.entries.delete(oldest.value);
+          }
+        }
+      };
+      exports.BoundedTtlCache = BoundedTtlCache;
     }
   });
 
@@ -747,7 +998,19 @@
       var signature_js_1 = require_signature();
       var base64_js_1 = require_base64();
       var thumbprint_js_1 = require_thumbprint();
-      var jwksCache = /* @__PURE__ */ new Map();
+      var cache_js_1 = require_cache();
+      var errors_js_1 = require_errors();
+      var jwksCache = new cache_js_1.BoundedTtlCache();
+      function toSignatureError(error) {
+        if (error instanceof errors_js_1.SignatureVerificationError) {
+          const result = { error: error.code };
+          if (error.requiredInput) {
+            result.required_input = error.requiredInput;
+          }
+          return result;
+        }
+        return mapToSignatureError(error instanceof Error ? error.message : String(error));
+      }
       function mapToSignatureError(errorMessage) {
         if (errorMessage.includes("Missing Signature-Key") || errorMessage.includes("Missing Signature-Input") || errorMessage.includes("Missing Signature") || errorMessage.includes("No signature found") || errorMessage.includes("No Signature-Input found") || errorMessage.includes("does not verify") || errorMessage.includes("Signature timestamp out of")) {
           return { error: "invalid_signature" };
@@ -800,23 +1063,26 @@
       }
       async function fetchJWKS(url, cacheTtl) {
         const cached = jwksCache.get(url);
-        if (cached && cached.expiresAt > Date.now()) {
-          return cached.jwks;
+        if (cached !== void 0) {
+          return cached;
         }
         const response = await globalThis.fetch(url);
         if (!response.ok) {
           throw new Error(`Failed to fetch JWKS from ${url}: ${response.statusText}`);
         }
         const jwks = await response.json();
-        jwksCache.set(url, {
-          jwks,
-          expiresAt: Date.now() + cacheTtl
-        });
+        jwksCache.set(url, jwks, cacheTtl);
         return jwks;
       }
       async function getPublicKeyFromJWKS(id, kid, dwk, cacheTtl) {
         const metadataUrl = `${id}/.well-known/${dwk}`;
         const metadata = await fetchJWKS(metadataUrl, cacheTtl);
+        if (metadata.issuer === void 0) {
+          throw (0, errors_js_1.issuerMissing)(`Metadata document missing issuer: ${metadataUrl}`);
+        }
+        if (metadata.issuer !== id) {
+          throw (0, errors_js_1.issuerMismatch)(`Metadata issuer "${metadata.issuer}" does not match id "${id}"`);
+        }
         if (!metadata.jwks_uri) {
           throw new Error(`Metadata document missing jwks_uri: ${metadataUrl}`);
         }
@@ -831,15 +1097,36 @@
         }
         return key;
       }
-      function decodeJWT(jwt) {
+      function decodeJWT(jwt, maxClockSkew) {
         const parts = jwt.split(".");
         if (parts.length !== 3) {
-          throw new Error("Invalid JWT format");
+          throw (0, errors_js_1.invalidJwt)("Invalid JWT format");
         }
-        const header = JSON.parse(new TextDecoder().decode((0, base64_js_1.base64urlDecode)(parts[0])));
-        const payload = JSON.parse(new TextDecoder().decode((0, base64_js_1.base64urlDecode)(parts[1])));
+        let header;
+        let payload;
+        try {
+          header = JSON.parse(new TextDecoder().decode((0, base64_js_1.base64urlDecode)(parts[0])));
+          payload = JSON.parse(new TextDecoder().decode((0, base64_js_1.base64urlDecode)(parts[1])));
+        } catch {
+          throw (0, errors_js_1.invalidJwt)("Invalid JWT: header or payload is not valid JSON");
+        }
         if (!payload.cnf || !payload.cnf.jwk) {
-          throw new Error("JWT missing cnf.jwk claim");
+          throw (0, errors_js_1.invalidJwt)("JWT missing cnf.jwk claim");
+        }
+        const now = Math.floor(Date.now() / 1e3);
+        if (typeof payload.exp !== "number") {
+          throw (0, errors_js_1.invalidJwt)("JWT missing required exp claim");
+        }
+        if (payload.exp + maxClockSkew < now) {
+          throw (0, errors_js_1.expiredJwt)("JWT expired");
+        }
+        if (payload.iat !== void 0) {
+          if (typeof payload.iat !== "number") {
+            throw (0, errors_js_1.invalidJwt)("JWT iat claim is not a number");
+          }
+          if (payload.iat - maxClockSkew > now) {
+            throw (0, errors_js_1.invalidJwt)("JWT iat is in the future");
+          }
         }
         return {
           header,
@@ -915,9 +1202,9 @@
           maxClockSkew = 60,
           jwksCacheTtl = 36e5,
           // 1 hour
-          strictAAuth = true
-          // Enforce AAuth profile by default
+          supportedAlgorithms
         } = options;
+        const accepted = supportedAlgorithms ?? crypto_js_1.SUPPORTED_ALGORITHMS;
         try {
           const headers = normalizeHeaders(request.headers);
           const signatureKeyHeader = headers.get("signature-key");
@@ -937,8 +1224,13 @@
             throw new Error(`No Signature-Input found for label "${label}" from Signature-Key`);
           }
           const { components, params } = signatureInput;
-          if (strictAAuth && !components.includes("signature-key")) {
-            throw new Error("AAuth profile violation: signature-key must be in covered components");
+          if (!components.includes("signature-key")) {
+            throw (0, errors_js_1.invalidInput)("signature-key must be a covered component", [
+              "@method",
+              "@authority",
+              "@path",
+              "signature-key"
+            ]);
           }
           const now = Math.floor(Date.now() / 1e3);
           const skew = Math.abs(now - params.created);
@@ -953,7 +1245,7 @@
             publicJwk = signatureKey.value;
           } else if (signatureKey.type === "jwt") {
             const jwtValue = signatureKey.value;
-            const { header, payload, publicKey: publicKey2 } = decodeJWT(jwtValue.jwt);
+            const { header, payload, publicKey: publicKey2 } = decodeJWT(jwtValue.jwt, maxClockSkew);
             publicJwk = publicKey2;
             jwtData = {
               header,
@@ -980,6 +1272,9 @@
             throw new Error(`Unsupported signature key type: ${signatureKey.type}`);
           }
           (0, crypto_js_1.validateJwk)(publicJwk);
+          if (!accepted.includes(publicJwk.alg)) {
+            throw (0, errors_js_1.unsupportedAlgorithm)(`Algorithm "${publicJwk.alg}" is not accepted by this verifier`, [...accepted]);
+          }
           const signatureHeader = headers.get("signature");
           if (!signatureHeader) {
             throw new Error("Missing Signature header");
@@ -1068,7 +1363,8 @@
             thumbprint: "",
             created: 0,
             error: errorMessage,
-            signatureError: mapToSignatureError(errorMessage)
+            signatureError: toSignatureError(error),
+            ...error instanceof errors_js_1.SignatureVerificationError && error.supportedAlgorithms ? { acceptSignatureAlg: error.supportedAlgorithms } : {}
           };
         }
       }
@@ -1138,7 +1434,7 @@
     "node_modules/@hellocoop/httpsig/dist/index.js"(exports) {
       "use strict";
       Object.defineProperty(exports, "__esModule", { value: true });
-      exports.DEFAULT_COMPONENTS_BODY = exports.DEFAULT_COMPONENTS_GET = exports.VALID_DERIVED_COMPONENTS = exports.generateKeyPair = exports.parseAcceptSignature = exports.generateAcceptSignatureHeader = exports.parseSignatureError = exports.generateSignatureErrorHeader = exports.nextJsPagesVerify = exports.nextJsVerify = exports.fastifyVerify = exports.expressVerify = exports.verify = void 0;
+      exports.DEFAULT_COMPONENTS_BODY = exports.DEFAULT_COMPONENTS_GET = exports.VALID_DERIVED_COMPONENTS = exports.calculateThumbprint = exports.SignatureVerificationError = exports.SUPPORTED_ALGORITHMS = exports.determineAlgorithm = exports.generateKeyPair = exports.parseAcceptSignatureAlg = exports.generateAcceptSignatureAlgHeader = exports.parseAcceptSignatureScheme = exports.generateAcceptSignatureSchemeHeader = exports.parseAcceptSignature = exports.generateAcceptSignatureHeader = exports.parseSignatureError = exports.generateSignatureErrorHeader = exports.nextJsPagesVerify = exports.nextJsVerify = exports.fastifyVerify = exports.expressVerify = exports.verify = void 0;
       var fetch_js_1 = require_fetch();
       Object.defineProperty(exports, "fetch", { enumerable: true, get: function() {
         return fetch_js_1.fetch;
@@ -1173,9 +1469,35 @@
       Object.defineProperty(exports, "parseAcceptSignature", { enumerable: true, get: function() {
         return signature_js_1.parseAcceptSignature;
       } });
+      Object.defineProperty(exports, "generateAcceptSignatureSchemeHeader", { enumerable: true, get: function() {
+        return signature_js_1.generateAcceptSignatureSchemeHeader;
+      } });
+      Object.defineProperty(exports, "parseAcceptSignatureScheme", { enumerable: true, get: function() {
+        return signature_js_1.parseAcceptSignatureScheme;
+      } });
+      Object.defineProperty(exports, "generateAcceptSignatureAlgHeader", { enumerable: true, get: function() {
+        return signature_js_1.generateAcceptSignatureAlgHeader;
+      } });
+      Object.defineProperty(exports, "parseAcceptSignatureAlg", { enumerable: true, get: function() {
+        return signature_js_1.parseAcceptSignatureAlg;
+      } });
       var crypto_js_1 = require_crypto();
       Object.defineProperty(exports, "generateKeyPair", { enumerable: true, get: function() {
         return crypto_js_1.generateKeyPair;
+      } });
+      Object.defineProperty(exports, "determineAlgorithm", { enumerable: true, get: function() {
+        return crypto_js_1.determineAlgorithm;
+      } });
+      Object.defineProperty(exports, "SUPPORTED_ALGORITHMS", { enumerable: true, get: function() {
+        return crypto_js_1.SUPPORTED_ALGORITHMS;
+      } });
+      var errors_js_1 = require_errors();
+      Object.defineProperty(exports, "SignatureVerificationError", { enumerable: true, get: function() {
+        return errors_js_1.SignatureVerificationError;
+      } });
+      var thumbprint_js_1 = require_thumbprint();
+      Object.defineProperty(exports, "calculateThumbprint", { enumerable: true, get: function() {
+        return thumbprint_js_1.calculateThumbprint;
       } });
       var types_js_1 = require_types();
       Object.defineProperty(exports, "VALID_DERIVED_COMPONENTS", { enumerable: true, get: function() {
@@ -3073,11 +3395,16 @@
     } catch {
     }
   });
+  async function exportSigningJwk(publicKey) {
+    const jwk = await crypto.subtle.exportKey("jwk", publicKey);
+    jwk.alg = "Ed25519";
+    return jwk;
+  }
   window.aauthSigFetch = async function aauthSigFetch(url, { method = "GET", headers = {}, body, jwt } = {}) {
     const keyPair = window.aauthEphemeral.get();
     if (!keyPair) throw new Error("no signing key available");
     if (!jwt) throw new Error("jwt required for sig=jwt scheme");
-    const signingKey = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const signingKey = await exportSigningJwk(keyPair.publicKey);
     const hasBody = body !== void 0 && body !== null;
     const components = hasBody ? ["@method", "@authority", "@path", "content-type", "signature-key"] : ["@method", "@authority", "@path", "signature-key"];
     const mergedHeaders = hasBody ? { "Content-Type": "application/json", ...headers } : { ...headers };
@@ -3094,7 +3421,7 @@
   window.aauthSigFetchHwk = async function aauthSigFetchHwk(url, { method = "POST", headers = {}, body } = {}) {
     const keyPair = window.aauthEphemeral.get();
     if (!keyPair) throw new Error("no signing key available");
-    const signingKey = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const signingKey = await exportSigningJwk(keyPair.publicKey);
     const hasBody = body !== void 0 && body !== null;
     const components = hasBody ? ["@method", "@authority", "@path", "content-type", "signature-key"] : ["@method", "@authority", "@path", "signature-key"];
     const mergedHeaders = hasBody ? { "Content-Type": "application/json", ...headers } : { ...headers };
@@ -3383,7 +3710,7 @@ ${renderJSON(body)}`;
         "Content-Type": "application/json",
         "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
         "Signature": "sig=:...:",
-        "Signature-Key": `sig=hwk;kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`
+        "Signature-Key": `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`
       }, body)
     );
     let result;
@@ -3425,7 +3752,7 @@ ${renderJSON(body)}`;
       return null;
     }
     addLogSection(copy("sections.refresh"));
-    const publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const publicJwk = await exportSigningJwk(keyPair.publicKey);
     let psUrl;
     const savedToken = localStorage.getItem("aauth-agent-token");
     if (savedToken) {
@@ -3444,7 +3771,7 @@ ${renderJSON(body)}`;
         "Content-Type": "application/json",
         "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
         "Signature": "sig=:...:",
-        "Signature-Key": `sig=hwk;kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`
+        "Signature-Key": `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`
       }, body)
     );
     let result;
@@ -3543,7 +3870,7 @@ ${renderJSON(body)}`;
       );
       return;
     }
-    const signingJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const signingJwk = await exportSigningJwk(keyPair.publicKey);
     addLogSection(copy("sections.whoami"));
     const urlObj = new URL(whoamiUrl);
     const whoamiPathDisplay = urlObj.pathname + urlObj.search;
@@ -3786,7 +4113,7 @@ ${renderJSON(body)}`;
     } else if (saved.whoamiUrl) {
       const urlObj = new URL(saved.whoamiUrl);
       const whoamiPathDisplay = urlObj.pathname + urlObj.search;
-      const signingJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+      const signingJwk = await exportSigningJwk(keyPair.publicKey);
       options = {
         onAuthToken: async (tokenFromPoll) => {
           showWhoamiAuthTokenReceived(tokenFromPoll);
@@ -3987,7 +4314,7 @@ ${renderJSON(body)}`;
     const keyPair = window.aauthEphemeral.get();
     const agentToken = localStorage.getItem("aauth-agent-token");
     if (!keyPair || !agentToken) return;
-    const signingJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const signingJwk = await exportSigningJwk(keyPair.publicKey);
     const pollPath = new URL(absolutePollUrl).pathname;
     if (!pollStep) {
       pollStep = addLogStep(
@@ -4285,7 +4612,7 @@ ${renderJSON(body)}`;
       addLogStep(copy("authorize.missing_context.label"), "error", desc("authorize.missing_context"));
       return;
     }
-    const signingJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const signingJwk = await exportSigningJwk(keyPair.publicKey);
     addLogSection(copy("sections.notes"));
     const discovery = await performNotesDiscovery(true);
     if (!discovery) {
@@ -4555,7 +4882,7 @@ ${renderJSON(body)}`;
     }
     const keyPair = window.aauthEphemeral.get();
     if (!keyPair) return null;
-    const signingJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const signingJwk = await exportSigningJwk(keyPair.publicKey);
     const origin = window.NOTES_ORIGIN || "https://notes.aauth.dev";
     const url = `${origin}${path}`;
     const hasBody = body !== void 0 && body !== null;
@@ -4673,7 +5000,7 @@ ${renderJSON(body)}`;
       }, null)
     );
     try {
-      const signingJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+      const signingJwk = await exportSigningJwk(keyPair.publicKey);
       const res = await (0, import_httpsig.fetch)(endpoint, {
         method: "GET",
         signingKey: signingJwk,

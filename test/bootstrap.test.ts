@@ -53,9 +53,11 @@ async function loadApp() {
 }
 
 // Generate a fresh ephemeral keypair (the agent's durable signing key).
+// httpsig 2.0 requires the signing JWK to carry a fully-specified alg
+// (RFC 9864); WebCrypto's exportKey does not set one.
 async function makeEphemeralKeyPair(): Promise<{ publicJwk: JsonWebKey; privateJwk: JsonWebKey }> {
   const kp = (await webcrypto.subtle.generateKey('Ed25519', true, ['sign', 'verify'])) as CryptoKeyPair
-  const publicJwk = await webcrypto.subtle.exportKey('jwk', kp.publicKey)
+  const publicJwk = { ...(await webcrypto.subtle.exportKey('jwk', kp.publicKey)), alg: 'Ed25519' }
   const privateJwk = await webcrypto.subtle.exportKey('jwk', kp.privateKey)
   return { publicJwk, privateJwk }
 }
@@ -121,6 +123,8 @@ describe('POST /bootstrap', () => {
     expect(cnf.jwk.kty).toBe(publicJwk.kty)
     expect(cnf.jwk.crv).toBe(publicJwk.crv)
     expect(cnf.jwk.x).toBe(publicJwk.x)
+    // httpsig 2.0 verifiers require cnf.jwk to carry a fully-specified alg.
+    expect((cnf.jwk as { alg?: string }).alg).toBe('Ed25519')
   })
 
   it('omits ps when none requested', async () => {

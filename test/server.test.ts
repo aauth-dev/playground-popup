@@ -103,6 +103,9 @@ describe('GET /.well-known/jwks.json', () => {
     const key = body.keys[0]
     expect(key.kty).toBe('OKP')
     expect(key.crv).toBe('Ed25519')
+    // Fully-specified alg required by httpsig 2.0 / RFC 9864 ('EdDSA' is
+    // polymorphic and rejected).
+    expect(key.alg).toBe('Ed25519')
     expect(key.x).toBeDefined()
     expect(key.kid).toBeDefined()
     expect(key.d).toBeUndefined()
@@ -122,8 +125,10 @@ async function mintAgentTokenForTest(env: any, opts?: { sub?: string; exp?: numb
 }> {
   const { computeJwkThumbprint } = await import('../src/crypto')
   const kp = await webcrypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']) as CryptoKeyPair
-  const publicJwk = await webcrypto.subtle.exportKey('jwk', kp.publicKey)
-  const privateJwk = await webcrypto.subtle.exportKey('jwk', kp.privateKey)
+  // httpsig 2.0 requires signing JWKs to carry a fully-specified alg
+  // (RFC 9864); WebCrypto's exportKey does not set one.
+  const publicJwk = { ...(await webcrypto.subtle.exportKey('jwk', kp.publicKey)), alg: 'Ed25519' }
+  const privateJwk = { ...(await webcrypto.subtle.exportKey('jwk', kp.privateKey)), alg: 'Ed25519' }
 
   const serverJwk = JSON.parse(env.SIGNING_KEY)
   const serverKey = await webcrypto.subtle.importKey('jwk', serverJwk, { name: 'Ed25519' }, false, ['sign'])
@@ -137,7 +142,8 @@ async function mintAgentTokenForTest(env: any, opts?: { sub?: string; exp?: numb
     dwk: 'aauth-agent.json',
     sub: opts?.sub ?? 'aauth:test@playground.test',
     jti: `jti-${Math.random().toString(36).slice(2)}`,
-    cnf: { jwk: { kty: publicJwk.kty, crv: publicJwk.crv, x: publicJwk.x } },
+    // httpsig 2.0 verifiers require cnf.jwk to carry a fully-specified alg.
+    cnf: { jwk: { kty: publicJwk.kty, crv: publicJwk.crv, x: publicJwk.x, alg: 'Ed25519' } },
     iat: now,
     exp: opts?.exp ?? now + 3600,
   }
@@ -227,7 +233,7 @@ describe('POST /authorize', () => {
     // verify the signature. This is the key guarantee full httpsig gives us
     // over the old JWT-only check.
     const attackerKp = await webcrypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']) as CryptoKeyPair
-    const attackerPriv = await webcrypto.subtle.exportKey('jwk', attackerKp.privateKey)
+    const attackerPriv = { ...(await webcrypto.subtle.exportKey('jwk', attackerKp.privateKey)), alg: 'Ed25519' }
     const body = JSON.stringify({ ps: 'https://ps.test', scope: 'playground.demo' })
     const headers = await signedHeaders(body, agentToken, attackerPriv)
     const res = await app.request('/authorize', { method: 'POST', headers, body }, env)

@@ -117,6 +117,8 @@ describe('getPublicJWK', () => {
     const publicJwk = await getPublicJWK(signingKeyJson)
     expect(publicJwk.kty).toBe('OKP')
     expect(publicJwk.crv).toBe('Ed25519')
+    // httpsig 2.0 / RFC 9864: published JWKs carry a fully-specified alg.
+    expect(publicJwk.alg).toBe('Ed25519')
     expect(publicJwk.x).toBeDefined()
     expect((publicJwk as any).d).toBeUndefined()
     expect(publicJwk.kid).toBeDefined()

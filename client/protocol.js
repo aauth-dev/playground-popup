@@ -57,6 +57,16 @@ function trace(label, extra) {
   try { console.log(`[aauth] ${label}`, extra ?? '') } catch {}
 }
 
+// httpsig 2.0 (signature-key -08 / RFC 9864) requires every signing JWK to
+// carry a fully-specified alg ('EdDSA' is rejected — 'Ed25519' is the
+// fully-specified name). WebCrypto's exportKey does not set alg, so every
+// JWK we hand to sigFetch as signingKey goes through this helper.
+async function exportSigningJwk(publicKey) {
+  const jwk = await crypto.subtle.exportKey('jwk', publicKey)
+  jwk.alg = 'Ed25519'
+  return jwk
+}
+
 // Signed fetch helpers exposed for app.js (which can't import sigFetch
 // directly since it isn't bundled).
 //   aauthSigFetch    — sig=jwt (agent_token or auth_token)
@@ -65,7 +75,7 @@ window.aauthSigFetch = async function aauthSigFetch(url, { method = 'GET', heade
   const keyPair = window.aauthEphemeral.get()
   if (!keyPair) throw new Error('no signing key available')
   if (!jwt) throw new Error('jwt required for sig=jwt scheme')
-  const signingKey = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  const signingKey = await exportSigningJwk(keyPair.publicKey)
   const hasBody = body !== undefined && body !== null
   const components = hasBody
     ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
@@ -87,7 +97,7 @@ window.aauthSigFetch = async function aauthSigFetch(url, { method = 'GET', heade
 window.aauthSigFetchHwk = async function aauthSigFetchHwk(url, { method = 'POST', headers = {}, body } = {}) {
   const keyPair = window.aauthEphemeral.get()
   if (!keyPair) throw new Error('no signing key available')
-  const signingKey = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  const signingKey = await exportSigningJwk(keyPair.publicKey)
   const hasBody = body !== undefined && body !== null
   const components = hasBody
     ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
@@ -608,7 +618,7 @@ async function runBootstrap(psUrl) {
       'Content-Type': 'application/json',
       'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
       'Signature': 'sig=:...:',
-      'Signature-Key': `sig=hwk;kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
+      'Signature-Key': `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
     }, body)
   )
 
@@ -657,7 +667,7 @@ async function runRefresh() {
 
   addLogSection(copy('sections.refresh'))
 
-  const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  const publicJwk = await exportSigningJwk(keyPair.publicKey)
   // Carry the same PS URL the agent_token currently names so the
   // refreshed token preserves it. If there's no current token (rare —
   // restoreAgentTokenAndKey already returned false in that case), fall
@@ -677,7 +687,7 @@ async function runRefresh() {
       'Content-Type': 'application/json',
       'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
       'Signature': 'sig=:...:',
-      'Signature-Key': `sig=hwk;kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
+      'Signature-Key': `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
     }, body)
   )
 
@@ -834,7 +844,7 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
       '<p>The agent doesn\'t have an agent token or key yet — bootstrap has to finish first.</p>')
     return
   }
-  const signingJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  const signingJwk = await exportSigningJwk(keyPair.publicKey)
 
   addLogSection(copy('sections.whoami'))
 
@@ -1191,7 +1201,7 @@ async function resumePendingAuthorize() {
   } else if (saved.whoamiUrl) {
     const urlObj = new URL(saved.whoamiUrl)
     const whoamiPathDisplay = urlObj.pathname + urlObj.search
-    const signingJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+    const signingJwk = await exportSigningJwk(keyPair.publicKey)
     options = {
       onAuthToken: async (tokenFromPoll) => {
         showWhoamiAuthTokenReceived(tokenFromPoll)
@@ -1442,7 +1452,7 @@ async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pol
   const keyPair = window.aauthEphemeral.get()
   const agentToken = localStorage.getItem('aauth-agent-token')
   if (!keyPair || !agentToken) return
-  const signingJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  const signingJwk = await exportSigningJwk(keyPair.publicKey)
 
   const pollPath = new URL(absolutePollUrl).pathname
   // Caller can pre-create the pollStep so the log orders as
@@ -1814,7 +1824,7 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
     addLogStep(copy('authorize.missing_context.label'), 'error', desc('authorize.missing_context'))
     return
   }
-  const signingJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  const signingJwk = await exportSigningJwk(keyPair.publicKey)
 
   addLogSection(copy('sections.notes'))
 
@@ -2124,7 +2134,7 @@ async function callNotesAPI(method, path, body) {
   }
   const keyPair = window.aauthEphemeral.get()
   if (!keyPair) return null
-  const signingJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+  const signingJwk = await exportSigningJwk(keyPair.publicKey)
   const origin = window.NOTES_ORIGIN || 'https://notes.aauth.dev'
   const url = `${origin}${path}`
   const hasBody = body !== undefined && body !== null
@@ -2309,7 +2319,7 @@ async function callDemoResourceApi(authToken) {
     }, null)
   )
   try {
-    const signingJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+    const signingJwk = await exportSigningJwk(keyPair.publicKey)
     const res = await sigFetch(endpoint, {
       method: 'GET',
       signingKey: signingJwk,

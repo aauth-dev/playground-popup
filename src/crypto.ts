@@ -37,21 +37,29 @@ export async function getPublicJWK(jwkJson: string): Promise<JsonWebKey & { kid:
   // (key_ops: ["sign"], ext) that WebCrypto carries over when exporting
   // the private JWK. Published JWKS keys are for verification only.
   const { d: _d, key_ops: _ops, ext: _ext, ...rest } = jwk
-  const publicJwk = { ...rest, key_ops: ['verify'] }
+  // httpsig 2.0 (signature-key -08 / RFC 9864): every published JWK must
+  // carry a fully-specified alg. WebCrypto's exportKey does not set it (and
+  // the polymorphic 'EdDSA' is rejected), so stamp it. Our signing key is
+  // always Ed25519 (see importSigningKey).
+  const publicJwk = { ...rest, alg: 'Ed25519', key_ops: ['verify'] }
   // Compute kid as thumbprint of the required public members only
   const kid = await computeJwkThumbprint(publicJwk)
   return { ...publicJwk, kid }
 }
 
-// Keep only the RFC 7638 required public-key members for the given key type.
-// Drops d (private), key_ops, ext, alg, and any other WebCrypto-inserted
-// hints. Use for cnf.jwk in agent_token / resource_token so the confirmation
-// key is reduced to the canonical form verifiers can directly thumbprint.
+// Keep only the RFC 7638 required public-key members plus `alg` for the
+// given key type. Drops d (private), key_ops, ext, and any other
+// WebCrypto-inserted hints. Use for cnf.jwk in agent_token / resource_token:
+// the RFC 7638 members keep the thumbprint canonical (alg is not a
+// thumbprint input), and httpsig 2.0 (signature-key -08 / RFC 9864)
+// requires the confirmation key a sig=jwt verifier extracts to carry a
+// fully-specified alg. For OKP the crv name (Ed25519/Ed448) IS the
+// fully-specified alg; otherwise carry the incoming alg through.
 export function sanitizeCnfJwk(jwk: JsonWebKey): JsonWebKey {
-  if (jwk.kty === 'OKP') return { kty: 'OKP', crv: jwk.crv, x: jwk.x }
-  if (jwk.kty === 'EC') return { kty: 'EC', crv: jwk.crv, x: jwk.x, y: jwk.y }
-  if (jwk.kty === 'RSA') return { kty: 'RSA', n: jwk.n, e: jwk.e }
-  const { d: _d, key_ops: _ops, ext: _ext, alg: _alg, ...rest } = jwk as unknown as Record<string, unknown>
+  if (jwk.kty === 'OKP') return { kty: 'OKP', crv: jwk.crv, x: jwk.x, alg: jwk.crv }
+  if (jwk.kty === 'EC') return { kty: 'EC', crv: jwk.crv, x: jwk.x, y: jwk.y, alg: jwk.alg }
+  if (jwk.kty === 'RSA') return { kty: 'RSA', n: jwk.n, e: jwk.e, alg: jwk.alg }
+  const { d: _d, key_ops: _ops, ext: _ext, ...rest } = jwk as unknown as Record<string, unknown>
   return rest as unknown as JsonWebKey
 }
 
@@ -109,6 +117,9 @@ export function decodeJWTHeader(jwt: string): Record<string, unknown> {
 // algorithms. Hellō's issuer JWKS uses RS256; our own JWKS uses EdDSA.
 const JWT_ALG_PARAMS: Record<string, { importAlgo: any; verifyAlgo: any }> = {
   EdDSA: { importAlgo: { name: 'Ed25519' }, verifyAlgo: 'Ed25519' },
+  // RFC 9864 fully-specified identifier — accepted alongside the legacy
+  // polymorphic 'EdDSA' so issuers can move their JWT headers over.
+  Ed25519: { importAlgo: { name: 'Ed25519' }, verifyAlgo: 'Ed25519' },
   RS256: {
     importAlgo: { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     verifyAlgo: 'RSASSA-PKCS1-v1_5',

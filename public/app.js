@@ -200,16 +200,24 @@ window.aauthApplyBootstrapResult = applyBootstrapResult
 // Exposed for protocol.js to manage the durable signing key. Refresh
 // reuses the same key (no rotation), so a single rotate/get/getPublicJwk
 // trio is all the surface area we need.
+// httpsig 2.0 (signature-key -08 / RFC 9864) requires every signing JWK to
+// carry a fully-specified alg; WebCrypto's exportKey does not set one.
+async function exportPublicJwk(publicKey) {
+  const jwk = await crypto.subtle.exportKey('jwk', publicKey)
+  jwk.alg = 'Ed25519'
+  return jwk
+}
+
 window.aauthEphemeral = {
   rotate: async () => {
     const kp = await rotateKeyPair()
     return {
       keyPair: kp,
-      publicJwk: await crypto.subtle.exportKey('jwk', kp.publicKey),
+      publicJwk: await exportPublicJwk(kp.publicKey),
     }
   },
   get: () => ephemeralKeyPair,
-  getPublicJwk: async () => ephemeralKeyPair ? crypto.subtle.exportKey('jwk', ephemeralKeyPair.publicKey) : null,
+  getPublicJwk: async () => ephemeralKeyPair ? exportPublicJwk(ephemeralKeyPair.publicKey) : null,
 }
 
 // Signed fetch helper exposed for app.js (which can't import sigFetch
