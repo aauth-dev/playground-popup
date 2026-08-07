@@ -155,9 +155,14 @@ export async function verifyJWT(
 
   for (const jwk of candidates) {
     try {
+      // Strip alg before import: signature-key -08 JWKS keys carry the
+      // fully-specified alg "Ed25519" (RFC 9864), which workerd's importKey
+      // rejects for OKP keys (it only accepts "EdDSA" or no alg). The
+      // algorithm is passed explicitly via importAlgo, so alg is redundant.
+      const { alg: _alg, ...importJwk } = jwk as JsonWebKey & { alg?: string }
       const key = await crypto.subtle.importKey(
         'jwk',
-        { ...jwk, key_ops: ['verify'] },
+        { ...importJwk, key_ops: ['verify'] },
         algParams.importAlgo,
         false,
         ['verify']
