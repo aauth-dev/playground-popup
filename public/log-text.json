@@ -37,6 +37,47 @@
     }
   },
 
+  "person_token": {
+    "request": {
+      "label_template": "Agent → Person Server: POST {path}",
+      "label_resolved_template": "Agent → Person Server: POST {path}",
+      "label_error_network_template": "Agent → Person Server: POST {path} (network error)",
+      "description": "Before calling a resource, the agent asks your Person Server for a person token naming that resource. The Person Server returns an aa-person+jwt whose aud is the resource, whose sub is your directed identifier there, and whose cnf holds the agent's signing key. The agent presents it in place of its agent_token — the resource learns who the agent acts for from your Person Server, not from the agent. A person token is identity, not authorization: it carries no scope. A 200 means your Person Server already knows you use this resource; a 202 means it wants to ask you first."
+    },
+    "ps_pending_longpoll": {
+      "label_template": "Agent → Person Server: GET {path} (long-poll)",
+      "label_resolved_template": "Agent → Person Server: GET {path}",
+      "description": "The agent keeps one request open while you decide, instead of polling. The Person Server answers the moment you approve or deny."
+    },
+    "ps_consent_prompt": {
+      "label": "User at Person Server: recognition prompt",
+      "description": "Your Person Server asks whether this agent may act at this resource as you. This is not a scope question — no permissions are being released yet. Because a resource may serve requests on identity alone, naming you to it is itself the decision. Approve here, or scan the QR to approve on another device."
+    },
+    "received": {
+      "label": "Person Token received",
+      "description": "You approved this agent acting as you at this resource, and the Person Server released a person token. The agent now presents it to the resource in place of its agent_token."
+    },
+    "authorization_granted": {
+      "label": "Person Token Granted",
+      "description": ""
+    },
+    "authorization_denied": {
+      "label": "Person Token Denied",
+      "description": ""
+    },
+    "authorization_timed_out": {
+      "label": "Person Token Request Timed Out",
+      "description": ""
+    }
+  },
+
+  "person_token_resumed": {
+    "ps_consent_prompt": {
+      "label": "User at Person Server: recognition prompt (resumed)",
+      "description": "You returned mid-approval. The agent picks up the same pending person token request instead of starting over, then carries on with the resource call."
+    }
+  },
+
   "authorize": {
     "missing_context": {
       "label": "Missing agent_token or signing key",
@@ -52,7 +93,7 @@
       "label_template": "Agent → Person Server: POST {path}",
       "label_resolved_template": "Agent → Person Server: POST {path}",
       "label_error_network_template": "Agent → Person Server: POST {path} (network error)",
-      "description": "The agent trades that resource token with your Person Server for an auth token. A 200 means you've already consented to this scope; 202 means the Person Server needs your approval for a new one."
+      "description": "The agent trades that resource token at your Person Server's auth token endpoint for an auth token, signing the request with its agent_token. The Person Server resolves the person token the resource token names and confirms its ps, sub, and mission match. A 200 means you've already consented to this scope; 202 means the Person Server needs your approval for a new one."
     },
     "ps_pending_longpoll": {
       "label_template": "Agent → Person Server: GET {path} (long-poll)",
@@ -104,7 +145,7 @@
       "label_template": "Agent → Notes Resource: POST {path}",
       "label_resolved_template": "Agent → Notes Resource: POST {path}",
       "label_error_network_template": "Agent → Notes Resource: POST {path} (network error)",
-      "description": "The agent POSTs the operations it wants to the resource's authorize endpoint, signed with its agent_token. The resource responds with a resource_token naming an R3 document the Person Server will fetch during token exchange."
+      "description": "The agent POSTs the operations it wants to the resource's authorize endpoint, presenting the person token it just obtained. The resource verifies that token, then responds with a resource_token carrying the person's ps and sub plus an R3 document the Person Server will fetch during token exchange."
     },
     "r3_document_request": {
       "label_template": "Demo: GET {path} (R3 document)",
@@ -116,7 +157,7 @@
       "label_template": "Agent → Person Server: POST {path}",
       "label_resolved_template": "Agent → Person Server: POST {path}",
       "label_error_network_template": "Agent → Person Server: POST {path} (network error)",
-      "description": "The agent trades the resource_token at the Person Server's token endpoint. A 200 means consent was already on file; a 202 triggers a consent prompt. The Person Server fetches the R3 document, then emits an auth_token carrying r3_granted — the operations it's releasing."
+      "description": "The agent trades the resource_token at the Person Server's auth token endpoint, signing the request with its agent_token. The Person Server matches the resource_token against the person token it names, then fetches the R3 document and emits an auth_token carrying r3_granted — the operations it's releasing. A 200 means consent was already on file; a 202 triggers a consent prompt."
     },
     "ps_pending_longpoll": {
       "label_template": "Agent → Person Server: GET {path} (long-poll)",

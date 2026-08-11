@@ -1,13 +1,21 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { cors } from 'hono/cors'
 import type { Env } from './types'
-import { verifySigJwt, verifySigHwk, ourJwksVerifier, psJwksVerifier } from './httpsig-verify'
+import {
+  verifySigJwt,
+  verifySigHwk,
+  psJwksVerifier,
+  verifyPersonToken,
+  PERSON_TYP,
+} from './httpsig-verify'
 import {
   importSigningKey,
   getPublicJWK,
   signJWT,
   generateJTI,
   computeJwkThumbprint,
+  decodeJWTHeader,
   sanitizeCnfJwk,
 } from './crypto'
 import { generateAgentLocal } from './agent-local'
@@ -221,7 +229,9 @@ async function mintAgentToken(
   const publicJwk = await getPublicJWK(env.SIGNING_KEY)
   const now = Math.floor(Date.now() / 1000)
 
-  const agentHeader = { alg: 'EdDSA', typ: 'aa-agent+jwt', kid: publicJwk.kid }
+  // alg is the fully-specified `Ed25519`, not the polymorphic `EdDSA`
+  // (draft-hardt-oauth-aauth-protocol §Signature Algorithms).
+  const agentHeader = { alg: 'Ed25519', typ: 'aa-agent+jwt', kid: publicJwk.kid }
   const agentPayload: Record<string, unknown> = {
     iss: origin,
     dwk: 'aauth-agent.json',
@@ -243,37 +253,74 @@ async function mintAgentToken(
 }
 
 // ── Authorization (resource token issuance) ──
+//
+// Under AAuth -11 the agent presents a PERSON token here, not its agent
+// token: a resource MUST have verified a person token before it issues a
+// resource token (draft-hardt-oauth-aauth-protocol §Resource Access and
+// Resource Tokens). The person token's `iss` IS the person server, so the
+// request body carries only `scope` — there is no `ps` parameter to
+// believe or disbelieve, and the identity written into the resource token
+// is PS-asserted rather than agent-asserted.
+
+// 401 challenge for a request that presented no person token. The agent
+// gets one from its PS's person_token_endpoint and retries
+// (§Person Token Required).
+function personTokenRequired(c: Context<HonoEnv>) {
+  return c.json({ error: 'person token required' }, 401, {
+    'AAuth-Requirement': 'requirement=person-token',
+  })
+}
 
 app.post('/authorize', async (c) => {
-  // sig=jwt;jwt=<agent_token>. Verify the HTTP signature against
-  // agent_token.cnf.jwk, then verify the agent_token itself against our
-  // own JWKS — proves both that the token is ours and that the caller
-  // holds the cnf-bound ephemeral.
   const ourJwk = await getPublicJWK(c.env.SIGNING_KEY)
   const origin = c.env.ORIGIN
-  const verifyRes = await verifySigJwt(c, {
-    verifyInner: ourJwksVerifier(ourJwk),
-    expectedIss: origin,
-  })
+
+  // No Signature-Key at all: nothing to verify, so challenge rather than
+  // reject — the agent can satisfy this by fetching a person token.
+  if (!c.req.header('Signature-Key')) return personTokenRequired(c)
+
+  // sig=jwt;jwt=<person_token>. verifySigJwt proves the caller holds the
+  // key named in the presented JWT's cnf; the person token's own
+  // signature and claims are checked below.
+  const verifyRes = await verifySigJwt(c)
   if (verifyRes instanceof Response) return verifyRes
 
-  const agentPayload = verifyRes.innerPayload as Record<string, unknown>
+  // An agent token where a person token belongs is the "absent" case:
+  // only `typ` distinguishes the two, and the agent needs to be told
+  // which one this endpoint wants.
+  if (decodeJWTHeader(verifyRes.innerJwt).typ !== PERSON_TYP) {
+    return personTokenRequired(c)
+  }
 
-  let body: { ps: string; scope: string }
+  let person: Awaited<ReturnType<typeof verifyPersonToken>>
   try {
-    body = JSON.parse(verifyRes.rawBody) as { ps: string; scope: string }
+    person = await verifyPersonToken(verifyRes.innerJwt, {
+      aud: origin,
+      callerJkt: verifyRes.callerJkt,
+    })
+  } catch (err) {
+    return c.json({ error: 'invalid_person_token', detail: (err as Error).message }, 400)
+  }
+
+  const personPayload = person.payload
+  const psMetadata = person.psMetadata
+  const psMetadataUrl = person.psMetadataUrl
+
+  let body: { scope: string }
+  try {
+    body = JSON.parse(verifyRes.rawBody) as { scope: string }
   } catch {
     return c.json({ error: 'invalid JSON body' }, 400)
   }
 
-  if (!body.ps || !body.scope) {
-    return c.json({ error: 'missing required fields: ps, scope' }, 400)
+  if (!body.scope) {
+    return c.json({ error: 'missing required field: scope' }, 400)
   }
 
   // resource_token.scope is the combined identity + resource string the
-  // PS will classify at /aauth/token. The resource validates its own
-  // scopes (SCOPE_DESCRIPTIONS) and lets PS-known identity scopes pass
-  // through; anything else is a typo / spoofing attempt.
+  // PS will classify at its auth_token_endpoint. The resource validates
+  // its own scopes (SCOPE_DESCRIPTIONS) and lets PS-known identity scopes
+  // pass through; anything else is a typo / spoofing attempt.
   const requestedScopes = body.scope.trim().split(/\s+/).filter(Boolean)
   const unknown = requestedScopes.filter(
     (s) => !(s in SCOPE_DESCRIPTIONS) && !PS_IDENTITY_SCOPES.has(s),
@@ -282,67 +329,63 @@ app.post('/authorize', async (c) => {
     return c.json({ error: 'invalid_scope', unknown }, 400)
   }
 
-  // Validate PS URL is HTTPS
-  let psUrl: URL
-  try {
-    psUrl = new URL(body.ps)
-    if (psUrl.protocol !== 'https:') {
-      return c.json({ error: 'PS URL must be HTTPS' }, 400)
-    }
-  } catch {
-    return c.json({ error: 'invalid PS URL' }, 400)
-  }
-
-  // Step 1: Fetch and validate PS metadata
-  let psMetadata: Record<string, unknown>
-  const psMetadataUrl = `${psUrl.origin}/.well-known/aauth-person.json`
-  try {
-    const psRes = await fetch(psMetadataUrl)
-    if (!psRes.ok) {
-      return c.json({
-        error: `Failed to fetch PS metadata: ${psRes.status}`,
-        ps_metadata_url: psMetadataUrl,
-      }, 502)
-    }
-    psMetadata = await psRes.json() as Record<string, unknown>
-  } catch (err) {
+  // The PS metadata was fetched during person-token key discovery. We
+  // still need `issuer` (the resource token's audience in three-party) and
+  // `auth_token_endpoint` — renamed from `token_endpoint` in -11 — which
+  // the agent reads out of the response to place its token request.
+  if (!psMetadata.issuer || !psMetadata.auth_token_endpoint || !psMetadata.jwks_uri) {
     return c.json({
-      error: `Cannot reach PS: ${(err as Error).message}`,
-      ps_metadata_url: psMetadataUrl,
-    }, 502)
-  }
-
-  // Validate required PS metadata fields
-  if (!psMetadata.issuer || !psMetadata.token_endpoint || !psMetadata.jwks_uri) {
-    return c.json({
-      error: 'PS metadata missing required fields (issuer, token_endpoint, jwks_uri)',
+      error: 'PS metadata missing required fields (issuer, auth_token_endpoint, jwks_uri)',
       ps_metadata: psMetadata,
     }, 502)
   }
 
-  // Step 2: Create resource token.
+  // Mint the resource token. It carries no agent identifier: `agent_jkt`
+  // binds it to the agent's key, and `ps`/`sub`/`person_token_jti` name
+  // the person and the exact person token this authorization rests on
+  // (§Resource Token Structure).
   const agentJkt = await computeJwkThumbprint(
-    (agentPayload.cnf as { jwk: JsonWebKey }).jwk
+    (personPayload.cnf as { jwk: JsonWebKey }).jwk
   )
 
   const privateKey = await importSigningKey(c.env.SIGNING_KEY)
 
   const now = Math.floor(Date.now() / 1000)
   const rtHeader = {
-    alg: 'EdDSA',
+    alg: 'Ed25519',
     typ: 'aa-resource+jwt',
     kid: ourJwk.kid,
   }
-  const rtPayload = {
+  const rtPayload: Record<string, unknown> = {
     iss: origin,
     dwk: 'aauth-resource.json',
     aud: psMetadata.issuer as string,
     jti: generateJTI(),
-    agent: agentPayload.sub as string,
+    ps: personPayload.iss as string,
+    sub: personPayload.sub as string,
+    person_token_jti: personPayload.jti as string,
     agent_jkt: agentJkt,
     scope: body.scope,
     iat: now,
-    exp: now + 300, // 5 minutes
+    // 5 minutes, but never past the person token this rests on. The
+    // person token is itself clamped to the mission's expires_at, so
+    // this transitively keeps a mission-scoped resource token from
+    // outliving its mission.
+    exp: Math.min(now + 300, personPayload.exp as number),
+  }
+  // REQUIRED when the person token carried one, copied unchanged — the
+  // PS re-reads it off the person token it issued, so dropping it here
+  // would be detected as mission stripping.
+  if (typeof personPayload.mission_s256 === 'string') {
+    rtPayload.mission_s256 = personPayload.mission_s256
+  }
+  // Copied from the person token when it carried one. §Resource Token
+  // Verification step 6 has the PS check `ps`, `sub`, `mission_s256` and
+  // `tenant` against the person token it issued, "rejecting the resource
+  // token on any mismatch or omission" — so for a person who has a tenant,
+  // omitting it here is not a lost hint, it fails the whole exchange.
+  if (personPayload.tenant !== undefined) {
+    rtPayload.tenant = personPayload.tenant
   }
 
   const resourceToken = await signJWT(rtHeader, rtPayload, privateKey)
@@ -367,9 +410,16 @@ app.get('/api/demo', async (c) => {
   // from Signature-Key and verifies the RFC 9421 signature — proving
   // possession of the ephemeral. psJwksVerifier fetches the auth_token's
   // issuer JWKS (the PS) and verifies the token's own JWT signature.
+  //
+  // `accept` is stated, not defaulted: this endpoint takes an auth token
+  // and nothing else. A person token comes from the same PS with the same
+  // iss, dwk, aud, sub and cnf, so every other check here passes for one —
+  // and it carries no authorization at all (§Person Token Verification:
+  // "A recipient MUST reject an aa-person+jwt wherever an auth token is
+  // required").
   const origin = c.env.ORIGIN
   const verifyRes = await verifySigJwt(c, {
-    verifyInner: psJwksVerifier(),
+    verifyInner: psJwksVerifier(['auth']),
   })
   if (verifyRes instanceof Response) return verifyRes
 
