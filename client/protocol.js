@@ -67,6 +67,26 @@ async function exportSigningJwk(publicKey) {
   return jwk
 }
 
+// RFC 9421 covered components for every signed request we make.
+//
+// A signature over a request that carries a body MUST cover
+// content-digest (RFC 9530) — a body the signature doesn't commit to can
+// be swapped in transit while the signature still verifies. The Person
+// Server enforces this and rejects anything else with
+// `signature must cover content-digest on requests with a body`.
+//
+// sigFetch derives the Content-Digest header itself when the component is
+// listed, hashing the exact bytes handed to it as `body`. That means every
+// call site must pass a pre-serialized string — hand it a parsed object
+// and the digest is computed over something other than what goes on the
+// wire, so verification fails at the far end.
+const SIGNED_COMPONENTS = ['@method', '@authority', '@path', 'signature-key']
+const SIGNED_COMPONENTS_WITH_BODY = [
+  '@method', '@authority', '@path', 'content-type', 'content-digest', 'signature-key',
+]
+const signedComponents = (hasBody) =>
+  hasBody ? SIGNED_COMPONENTS_WITH_BODY : SIGNED_COMPONENTS
+
 // Signed fetch helpers exposed for app.js (which can't import sigFetch
 // directly since it isn't bundled).
 //   aauthSigFetch    — sig=jwt (agent_token or auth_token)
@@ -77,9 +97,7 @@ window.aauthSigFetch = async function aauthSigFetch(url, { method = 'GET', heade
   if (!jwt) throw new Error('jwt required for sig=jwt scheme')
   const signingKey = await exportSigningJwk(keyPair.publicKey)
   const hasBody = body !== undefined && body !== null
-  const components = hasBody
-    ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
-    : ['@method', '@authority', '@path', 'signature-key']
+  const components = signedComponents(hasBody)
   const mergedHeaders = hasBody
     ? { 'Content-Type': 'application/json', ...headers }
     : { ...headers }
@@ -99,9 +117,7 @@ window.aauthSigFetchHwk = async function aauthSigFetchHwk(url, { method = 'POST'
   if (!keyPair) throw new Error('no signing key available')
   const signingKey = await exportSigningJwk(keyPair.publicKey)
   const hasBody = body !== undefined && body !== null
-  const components = hasBody
-    ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
-    : ['@method', '@authority', '@path', 'signature-key']
+  const components = signedComponents(hasBody)
   const mergedHeaders = hasBody
     ? { 'Content-Type': 'application/json', ...headers }
     : { ...headers }
@@ -679,7 +695,7 @@ async function fetchPersonToken({
       signatureKey: { type: 'jwt', jwt: agentToken },
       // A request with a body to a PS endpoint signs content-digest and
       // content-type as well, so the body is covered by the signature.
-      components: ['@method', '@authority', '@path', 'content-type', 'content-digest', 'signature-key'],
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     const body = await res.json().catch(() => null)
     const respHeaders = {}
@@ -773,7 +789,8 @@ async function runBootstrap(psUrl) {
     desc('bootstrap.agent_provider_request') +
     formatRequest('POST', endpoint, {
       'Content-Type': 'application/json',
-      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+      'Content-Digest': 'sha-256=:...:',
+      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
       'Signature': 'sig=:...:',
       'Signature-Key': `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
     }, body)
@@ -788,7 +805,7 @@ async function runBootstrap(psUrl) {
       signingKey: publicJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'hwk' },
-      components: ['@method', '@authority', '@path', 'content-type', 'signature-key'],
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     result = await res.json().catch(() => null)
     if (!res.ok || !result?.agent_token) {
@@ -842,7 +859,8 @@ async function runRefresh() {
     desc('refresh.agent_provider_request') +
     formatRequest('POST', endpoint, {
       'Content-Type': 'application/json',
-      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+      'Content-Digest': 'sha-256=:...:',
+      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
       'Signature': 'sig=:...:',
       'Signature-Key': `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
     }, body)
@@ -857,7 +875,7 @@ async function runRefresh() {
       signingKey: publicJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'hwk' },
-      components: ['@method', '@authority', '@path', 'content-type', 'signature-key'],
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     result = await res.json().catch(() => null)
     if (!res.ok || !result?.agent_token) {
@@ -1067,7 +1085,7 @@ async function continueWhoami({ whoamiUrl, bindingPs, hints, keyPair, agentToken
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'jwt', jwt: personToken },
-      components: ['@method', '@authority', '@path', 'signature-key'],
+      components: SIGNED_COMPONENTS,
     })
     const body = await res.json().catch(() => null)
     const requirement = res.headers.get('aauth-requirement') || ''
@@ -1177,7 +1195,7 @@ async function retryWhoami(whoamiUrl, whoamiPathDisplay, authToken, keyPair, sig
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'jwt', jwt: authToken },
-      components: ['@method', '@authority', '@path', 'signature-key'],
+      components: SIGNED_COMPONENTS,
     })
     const body = await res.json().catch(() => null)
     resolveStep(step, res.ok ? 'success' : 'error', `Agent → Whoami: GET ${whoamiPathDisplay}`)
@@ -1578,7 +1596,7 @@ async function runPSTokenExchange({
       signatureKey: { type: 'jwt', jwt: agentToken },
       // -11: a request carrying a body to a PS or AS endpoint MUST
       // additionally sign content-digest and content-type.
-      components: ['@method', '@authority', '@path', 'content-type', 'content-digest', 'signature-key'],
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     const psResBody = await psRes.json().catch(() => null)
     const respHeaders = {}
@@ -1787,7 +1805,7 @@ async function _deferredPollingImpl(pollUrl, baseUrl, interactionStep, pollStep,
         // the agent asking its own PS about a request it made, not a
         // resource call.
         signatureKey: { type: 'jwt', jwt: agentToken },
-        components: ['@method', '@authority', '@path', 'signature-key'],
+        components: SIGNED_COMPONENTS,
       })
       const respHeaders = {}
       for (const key of ['retry-after', 'aauth-requirement']) {
@@ -2195,7 +2213,8 @@ async function continueNotesAuthorize({
     desc('notes.authorize_request') +
       formatRequest('POST', authzEndpoint, {
         'Content-Type': 'application/json',
-        'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+        'Content-Digest': 'sha-256=:...:',
+        'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
         'Signature': 'sig=:...:',
         'Signature-Key': `sig=jwt;jwt="${personToken?.substring(0, 20)}..."`,
       }, requestBody),
@@ -2209,7 +2228,7 @@ async function continueNotesAuthorize({
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'jwt', jwt: personToken },
-      components: ['@method', '@authority', '@path', 'content-type', 'signature-key'],
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     const body = await res.json().catch(() => null)
     if (res.ok && body?.resource_token) {
@@ -2478,9 +2497,7 @@ async function callNotesAPI(method, path, body) {
   const origin = window.NOTES_ORIGIN || 'https://notes.aauth.dev'
   const url = `${origin}${path}`
   const hasBody = body !== undefined && body !== null
-  const components = hasBody
-    ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
-    : ['@method', '@authority', '@path', 'signature-key']
+  const components = signedComponents(hasBody)
 
   const copyKey =
     method === 'GET' && path === '/notes' ? 'notes_app.list_request'
@@ -2506,7 +2523,7 @@ async function callNotesAPI(method, path, body) {
     'pending',
     desc(copyKey) +
       formatRequest(method, url, {
-        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(hasBody ? { 'Content-Type': 'application/json', 'Content-Digest': 'sha-256=:...:' } : {}),
         'Signature-Input': 'sig=(...);created=...',
         'Signature': 'sig=:...:',
         'Signature-Key': `sig=jwt;jwt="${authToken.substring(0, 20)}..."`,
@@ -2665,7 +2682,7 @@ async function callDemoResourceApi(authToken) {
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'jwt', jwt: authToken },
-      components: ['@method', '@authority', '@path', 'signature-key'],
+      components: SIGNED_COMPONENTS,
     })
     const body = await res.json().catch(() => null)
     resolveStep(reqStep, res.ok ? 'success' : 'error', fmt(copy('demo_api.request.label_resolved_template'), { path: '/api/demo', status: res.status }))

@@ -3441,13 +3441,23 @@
     jwk.alg = "Ed25519";
     return jwk;
   }
+  var SIGNED_COMPONENTS = ["@method", "@authority", "@path", "signature-key"];
+  var SIGNED_COMPONENTS_WITH_BODY = [
+    "@method",
+    "@authority",
+    "@path",
+    "content-type",
+    "content-digest",
+    "signature-key"
+  ];
+  var signedComponents = (hasBody) => hasBody ? SIGNED_COMPONENTS_WITH_BODY : SIGNED_COMPONENTS;
   window.aauthSigFetch = async function aauthSigFetch(url, { method = "GET", headers = {}, body, jwt } = {}) {
     const keyPair = window.aauthEphemeral.get();
     if (!keyPair) throw new Error("no signing key available");
     if (!jwt) throw new Error("jwt required for sig=jwt scheme");
     const signingKey = await exportSigningJwk(keyPair.publicKey);
     const hasBody = body !== void 0 && body !== null;
-    const components = hasBody ? ["@method", "@authority", "@path", "content-type", "signature-key"] : ["@method", "@authority", "@path", "signature-key"];
+    const components = signedComponents(hasBody);
     const mergedHeaders = hasBody ? { "Content-Type": "application/json", ...headers } : { ...headers };
     return (0, import_httpsig.fetch)(url, {
       method,
@@ -3464,7 +3474,7 @@
     if (!keyPair) throw new Error("no signing key available");
     const signingKey = await exportSigningJwk(keyPair.publicKey);
     const hasBody = body !== void 0 && body !== null;
-    const components = hasBody ? ["@method", "@authority", "@path", "content-type", "signature-key"] : ["@method", "@authority", "@path", "signature-key"];
+    const components = signedComponents(hasBody);
     const mergedHeaders = hasBody ? { "Content-Type": "application/json", ...headers } : { ...headers };
     return (0, import_httpsig.fetch)(url, {
       method,
@@ -3795,7 +3805,7 @@ ${renderJSON(body)}`;
         signatureKey: { type: "jwt", jwt: agentToken },
         // A request with a body to a PS endpoint signs content-digest and
         // content-type as well, so the body is covered by the signature.
-        components: ["@method", "@authority", "@path", "content-type", "content-digest", "signature-key"]
+        components: SIGNED_COMPONENTS_WITH_BODY
       });
       const body = await res.json().catch(() => null);
       const respHeaders = {};
@@ -3864,7 +3874,8 @@ ${renderJSON(body)}`;
       "pending",
       desc("bootstrap.agent_provider_request") + formatRequest("POST", endpoint, {
         "Content-Type": "application/json",
-        "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+        "Content-Digest": "sha-256=:...:",
+        "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
         "Signature": "sig=:...:",
         "Signature-Key": `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`
       }, body)
@@ -3878,7 +3889,7 @@ ${renderJSON(body)}`;
         signingKey: publicJwk,
         signingCryptoKey: keyPair.privateKey,
         signatureKey: { type: "hwk" },
-        components: ["@method", "@authority", "@path", "content-type", "signature-key"]
+        components: SIGNED_COMPONENTS_WITH_BODY
       });
       result = await res.json().catch(() => null);
       if (!res.ok || !result?.agent_token) {
@@ -3925,7 +3936,8 @@ ${renderJSON(body)}`;
       "pending",
       desc("refresh.agent_provider_request") + formatRequest("POST", endpoint, {
         "Content-Type": "application/json",
-        "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+        "Content-Digest": "sha-256=:...:",
+        "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
         "Signature": "sig=:...:",
         "Signature-Key": `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`
       }, body)
@@ -3939,7 +3951,7 @@ ${renderJSON(body)}`;
         signingKey: publicJwk,
         signingCryptoKey: keyPair.privateKey,
         signatureKey: { type: "hwk" },
-        components: ["@method", "@authority", "@path", "content-type", "signature-key"]
+        components: SIGNED_COMPONENTS_WITH_BODY
       });
       result = await res.json().catch(() => null);
       if (!res.ok || !result?.agent_token) {
@@ -4069,7 +4081,7 @@ ${renderJSON(body)}`;
         signingKey: signingJwk,
         signingCryptoKey: keyPair.privateKey,
         signatureKey: { type: "jwt", jwt: personToken },
-        components: ["@method", "@authority", "@path", "signature-key"]
+        components: SIGNED_COMPONENTS
       });
       const body = await res.json().catch(() => null);
       const requirement = res.headers.get("aauth-requirement") || "";
@@ -4152,7 +4164,7 @@ ${renderJSON(body)}`;
         signingKey: signingJwk,
         signingCryptoKey: keyPair.privateKey,
         signatureKey: { type: "jwt", jwt: authToken },
-        components: ["@method", "@authority", "@path", "signature-key"]
+        components: SIGNED_COMPONENTS
       });
       const body = await res.json().catch(() => null);
       resolveStep(step, res.ok ? "success" : "error", `Agent \u2192 Whoami: GET ${whoamiPathDisplay}`);
@@ -4426,7 +4438,7 @@ ${renderJSON(body)}`;
         signatureKey: { type: "jwt", jwt: agentToken },
         // -11: a request carrying a body to a PS or AS endpoint MUST
         // additionally sign content-digest and content-type.
-        components: ["@method", "@authority", "@path", "content-type", "content-digest", "signature-key"]
+        components: SIGNED_COMPONENTS_WITH_BODY
       });
       const psResBody = await psRes.json().catch(() => null);
       const respHeaders = {};
@@ -4579,7 +4591,7 @@ ${renderJSON(body)}`;
           // the agent asking its own PS about a request it made, not a
           // resource call.
           signatureKey: { type: "jwt", jwt: agentToken },
-          components: ["@method", "@authority", "@path", "signature-key"]
+          components: SIGNED_COMPONENTS
         });
         const respHeaders = {};
         for (const key of ["retry-after", "aauth-requirement"]) {
@@ -4910,7 +4922,8 @@ ${renderJSON(body)}`;
       "pending",
       desc("notes.authorize_request") + formatRequest("POST", authzEndpoint, {
         "Content-Type": "application/json",
-        "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+        "Content-Digest": "sha-256=:...:",
+        "Signature-Input": 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
         "Signature": "sig=:...:",
         "Signature-Key": `sig=jwt;jwt="${personToken?.substring(0, 20)}..."`
       }, requestBody)
@@ -4924,7 +4937,7 @@ ${renderJSON(body)}`;
         signingKey: signingJwk,
         signingCryptoKey: keyPair.privateKey,
         signatureKey: { type: "jwt", jwt: personToken },
-        components: ["@method", "@authority", "@path", "content-type", "signature-key"]
+        components: SIGNED_COMPONENTS_WITH_BODY
       });
       const body = await res.json().catch(() => null);
       if (res.ok && body?.resource_token) {
@@ -5159,7 +5172,7 @@ ${renderJSON(body)}`;
     const origin = window.NOTES_ORIGIN || "https://notes.aauth.dev";
     const url = `${origin}${path}`;
     const hasBody = body !== void 0 && body !== null;
-    const components = hasBody ? ["@method", "@authority", "@path", "content-type", "signature-key"] : ["@method", "@authority", "@path", "signature-key"];
+    const components = signedComponents(hasBody);
     const copyKey = method === "GET" && path === "/notes" ? "notes_app.list_request" : method === "POST" ? "notes_app.create_request" : method === "PUT" ? "notes_app.update_request" : method === "DELETE" ? "notes_app.delete_request" : "notes_app.get_request";
     setActiveLog("notes-api-log");
     const apiLog = currentLog();
@@ -5171,7 +5184,7 @@ ${renderJSON(body)}`;
       fmt(copy(`${copyKey}.label_template`), { path }),
       "pending",
       desc(copyKey) + formatRequest(method, url, {
-        ...hasBody ? { "Content-Type": "application/json" } : {},
+        ...hasBody ? { "Content-Type": "application/json", "Content-Digest": "sha-256=:...:" } : {},
         "Signature-Input": "sig=(...);created=...",
         "Signature": "sig=:...:",
         "Signature-Key": `sig=jwt;jwt="${authToken.substring(0, 20)}..."`
@@ -5279,7 +5292,7 @@ ${renderJSON(body)}`;
         signingKey: signingJwk,
         signingCryptoKey: keyPair.privateKey,
         signatureKey: { type: "jwt", jwt: authToken },
-        components: ["@method", "@authority", "@path", "signature-key"]
+        components: SIGNED_COMPONENTS
       });
       const body = await res.json().catch(() => null);
       resolveStep(reqStep, res.ok ? "success" : "error", fmt(copy("demo_api.request.label_resolved_template"), { path: "/api/demo", status: res.status }));
