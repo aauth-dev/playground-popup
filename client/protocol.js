@@ -1250,7 +1250,7 @@ function renderInteraction(interaction, pollUrl, kind = 'bootstrap') {
     const missing = []
     if (!interaction.url) missing.push('interaction_endpoint (PS metadata) or url (header)')
     if (!interaction.code) missing.push('code')
-    return `<p style="color: var(--muted);">Interaction required but missing: ${escapeHtml(missing.join(', '))}.</p>`
+    return `<p class="interaction-missing" style="color: var(--muted);">Interaction required but missing: ${escapeHtml(missing.join(', '))}.</p>`
   }
 
   const heading = kind === 'authorize'
@@ -1747,6 +1747,7 @@ async function runDeferredResponse({
     consentDescription + renderInteraction(interaction, pollUrl, 'authorize'))
   if (interactionStep) {
     interactionStep.dataset.consentKey = consentKey
+    if (interaction.url && interaction.code) interactionStep.dataset.interactionRendered = '1'
     persistActiveLog()
   }
 
@@ -1755,6 +1756,7 @@ async function runDeferredResponse({
   return startDeferredPolling(absolutePollUrl, endpoint, interactionStep, pollStep, {
     tokenField,
     copyPrefix,
+    interactionUrl: psMetadata?.interaction_endpoint,
   })
 }
 
@@ -1829,6 +1831,22 @@ async function _deferredPollingImpl(pollUrl, baseUrl, interactionStep, pollStep,
         appendStepBody(pollStep,
           `<details class="section-group"><summary class="section-heading"><span>Cycle ${cycle} \u2192 ${res.status}</span>${CHEVRON_SVG}</summary>${formatResponse(res.status, respHeaders, body)}</details>`
         )
+      }
+      // A PS that can reach the user (push / open tab) opens with
+      // requirement=approval and only advertises the interaction url +
+      // code on a later cycle if the user has not responded. Upgrade the
+      // consent card the moment they arrive so the person always has a
+      // clickable path.
+      if (res.status === 202 && interactionStep && interactionStep.dataset.interactionRendered !== '1') {
+        const fromHeader = parseInteractionHeader(res.headers.get('aauth-requirement') || '')
+        const requirement = fromHeader.requirement || body?.requirement
+        const code = fromHeader.code || body?.code
+        const url = fromHeader.url || options.interactionUrl
+        if (requirement === 'interaction' && code && url) {
+          interactionStep.querySelector('.log-step-body .interaction-missing')?.remove()
+          appendStepBody(interactionStep, renderInteraction({ requirement, code, url }, absolutePollUrl, 'authorize'))
+          interactionStep.dataset.interactionRendered = '1'
+        }
       }
       if (res.status === 200) {
         clearPendingAuthorize()
