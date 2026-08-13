@@ -3781,7 +3781,7 @@ ${renderJSON(body)}`;
     if (!psMetadata) return null;
     const endpoint = psMetadata.person_token_endpoint;
     const path = new URL(endpoint).pathname;
-    const requestBody = missionS256 ? { resource, mission_s256: missionS256 } : { resource };
+    const requestBody = missionS256 ? { resource, mission_s256: missionS256, capabilities: ["interaction"] } : { resource, capabilities: ["interaction"] };
     const step = addLogStep(
       fmt(copy("person_token.request.label_template"), { path }),
       "pending",

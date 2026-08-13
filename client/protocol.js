@@ -669,7 +669,12 @@ async function fetchPersonToken({
   // `mission_s256` scopes the token to a mission when the agent is
   // working under one; the resource copies it into the resource token so
   // the PS can confirm the mission was never stripped.
-  const requestBody = missionS256 ? { resource, mission_s256: missionS256 } : { resource }
+  // `capabilities`: a browser agent can always put an interaction in front
+  // of the user; without the declaration a PS that needs to identify the
+  // user answers 403 user_unreachable instead of 202.
+  const requestBody = missionS256
+    ? { resource, mission_s256: missionS256, capabilities: ['interaction'] }
+    : { resource, capabilities: ['interaction'] }
 
   const step = addLogStep(
     fmt(copy('person_token.request.label_template'), { path }),
