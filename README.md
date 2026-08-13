@@ -8,6 +8,9 @@ Live at [aauth.dev](https://aauth.dev).
 - Registers and authenticates users via WebAuthn passkeys
 - Issues ephemeral `aa-agent+jwt` agent tokens bound to a browser-generated Ed25519 key pair
 - Publishes `/.well-known/aauth-agent.json` and `/.well-known/jwks.json`
+- Wearing its resource hat, requires an `aa-person+jwt` person token at
+  `/authorize` and issues `aa-resource+jwt` resource tokens naming the
+  person that token identified
 
 ## Getting started
 

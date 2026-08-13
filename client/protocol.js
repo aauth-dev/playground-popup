@@ -67,6 +67,26 @@ async function exportSigningJwk(publicKey) {
   return jwk
 }
 
+// RFC 9421 covered components for every signed request we make.
+//
+// A signature over a request that carries a body MUST cover
+// content-digest (RFC 9530) — a body the signature doesn't commit to can
+// be swapped in transit while the signature still verifies. The Person
+// Server enforces this and rejects anything else with
+// `signature must cover content-digest on requests with a body`.
+//
+// sigFetch derives the Content-Digest header itself when the component is
+// listed, hashing the exact bytes handed to it as `body`. That means every
+// call site must pass a pre-serialized string — hand it a parsed object
+// and the digest is computed over something other than what goes on the
+// wire, so verification fails at the far end.
+const SIGNED_COMPONENTS = ['@method', '@authority', '@path', 'signature-key']
+const SIGNED_COMPONENTS_WITH_BODY = [
+  '@method', '@authority', '@path', 'content-type', 'content-digest', 'signature-key',
+]
+const signedComponents = (hasBody) =>
+  hasBody ? SIGNED_COMPONENTS_WITH_BODY : SIGNED_COMPONENTS
+
 // Signed fetch helpers exposed for app.js (which can't import sigFetch
 // directly since it isn't bundled).
 //   aauthSigFetch    — sig=jwt (agent_token or auth_token)
@@ -77,9 +97,7 @@ window.aauthSigFetch = async function aauthSigFetch(url, { method = 'GET', heade
   if (!jwt) throw new Error('jwt required for sig=jwt scheme')
   const signingKey = await exportSigningJwk(keyPair.publicKey)
   const hasBody = body !== undefined && body !== null
-  const components = hasBody
-    ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
-    : ['@method', '@authority', '@path', 'signature-key']
+  const components = signedComponents(hasBody)
   const mergedHeaders = hasBody
     ? { 'Content-Type': 'application/json', ...headers }
     : { ...headers }
@@ -99,9 +117,7 @@ window.aauthSigFetchHwk = async function aauthSigFetchHwk(url, { method = 'POST'
   if (!keyPair) throw new Error('no signing key available')
   const signingKey = await exportSigningJwk(keyPair.publicKey)
   const hasBody = body !== undefined && body !== null
-  const components = hasBody
-    ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
-    : ['@method', '@authority', '@path', 'signature-key']
+  const components = signedComponents(hasBody)
   const mergedHeaders = hasBody
     ? { 'Content-Type': 'application/json', ...headers }
     : { ...headers }
@@ -581,8 +597,165 @@ function getSelectedIdentityScopes() {
 function getHints() {
   // Hints UI was removed from the bootstrap section (PS routing hints
   // belonged to the old PS bootstrap call); resource flows still call
-  // this and an empty object Just Works at the PS /token endpoint.
+  // this and an empty object Just Works at the PS auth token endpoint.
   return {}
+}
+
+// ── Person Server metadata ──
+//
+// Every PS publishes /.well-known/aauth-person.json. `person_token_endpoint`
+// is where the agent asks for a person token; `auth_token_endpoint` is where
+// it later trades a resource token for an auth token. (Through AAuth -10 the
+// latter was called `token_endpoint`; -11 renamed it, because there are now
+// two token endpoints.)
+async function fetchPsMetadata(bindingPs, requiredField) {
+  const psMetadataUrl = `${bindingPs.replace(/\/$/, '')}/.well-known/aauth-person.json`
+  try {
+    const metaRes = await fetch(psMetadataUrl)
+    const psMetadata = await metaRes.json().catch(() => null)
+    if (!metaRes.ok || !psMetadata?.[requiredField]) {
+      addLogStep('Person Server metadata fetch failed', 'error',
+        `<p>The Person Server's metadata is missing <code>${escapeHtml(requiredField)}</code>.</p>` +
+        formatResponse(metaRes.status, null, psMetadata) + anotherRequestButton())
+      return null
+    }
+    return psMetadata
+  } catch (err) {
+    addLogStep('Person Server metadata fetch failed', 'error',
+      `<p style="color: var(--error)">${escapeHtml(err.message)}</p>` + anotherRequestButton())
+    return null
+  }
+}
+
+// ── Person token ──
+//
+// The first hop of every resource call under AAuth -11. A resource MUST
+// have verified a person token before it issues a resource token, so the
+// agent asks its Person Server for one naming the resource it is about to
+// call. The request is signed with the agent's key and presents the
+// agent_token; the PS returns an `aa-person+jwt` whose `aud` is that
+// resource, whose `sub` is the person's directed identifier there, and
+// whose `cnf.jwk` is this agent's signing key. The agent then presents it
+// in the Signature-Key header in place of its agent_token — which is how
+// the resource learns who the agent acts for without the agent asserting
+// it. Nothing about the agent's own identity travels in that token.
+//
+// The PS MAY require the person to approve first, in which case it answers
+// 202 and the agent long-polls (#person-token-endpoint). That is the
+// ordinary first run, not an edge case: the question the PS puts to the
+// person is whether this agent may act at the resource AS THEM, and Wallet
+// asks it on first contact with any resource the person has not used. So
+// the very first Whoami/Notes click of a fresh demo goes through consent
+// here, before any resource_token exists.
+//
+// Returns { personToken, psMetadata } or null (the failure is logged).
+// Does not resolve at all when the person approves after a same-tab
+// redirect — resumePendingAuthorize continues the flow on return.
+async function fetchPersonToken({
+  resource,
+  bindingPs,
+  keyPair,
+  agentToken,
+  signingJwk,
+  missionS256,
+  consentKey,
+  pendingRecord,
+}) {
+  const psMetadata = await fetchPsMetadata(bindingPs, 'person_token_endpoint')
+  if (!psMetadata) return null
+
+  const endpoint = psMetadata.person_token_endpoint
+  const path = new URL(endpoint).pathname
+  // `mission_s256` scopes the token to a mission when the agent is
+  // working under one; the resource copies it into the resource token so
+  // the PS can confirm the mission was never stripped.
+  const requestBody = missionS256 ? { resource, mission_s256: missionS256 } : { resource }
+
+  const step = addLogStep(
+    fmt(copy('person_token.request.label_template'), { path }),
+    'pending',
+    desc('person_token.request') +
+      formatRequest('POST', endpoint, {
+        'Content-Type': 'application/json',
+        'Content-Digest': 'sha-256=:...:',
+        'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
+        'Signature': 'sig=:...:',
+        'Signature-Key': `sig=jwt;jwt="${agentToken?.substring(0, 20)}..."`,
+      }, requestBody),
+  )
+  try {
+    const res = await sigFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+      signingKey: signingJwk,
+      signingCryptoKey: keyPair.privateKey,
+      // The agent is still only an agent here — the person token is what
+      // it is asking for, so it presents its agent_token to get one.
+      signatureKey: { type: 'jwt', jwt: agentToken },
+      // A request with a body to a PS endpoint signs content-digest and
+      // content-type as well, so the body is covered by the signature.
+      components: SIGNED_COMPONENTS_WITH_BODY,
+    })
+    const body = await res.json().catch(() => null)
+    const respHeaders = {}
+    for (const key of ['location', 'retry-after', 'aauth-requirement']) {
+      const v = res.headers.get(key)
+      if (v) respHeaders[key] = v
+    }
+    resolveStep(step, res.status === 200 || res.status === 202 ? 'success' : 'error',
+      fmt(copy('person_token.request.label_resolved_template'), { path, status: res.status }))
+    appendStepBody(step, formatResponse(res.status, respHeaders, body))
+
+    if (res.status === 200 && body?.person_token) {
+      appendStepBody(step, formatDecoded(decodeJWTPayloadBrowser(body.person_token), 'person_token payload'))
+      return { personToken: body.person_token, psMetadata }
+    }
+
+    if (res.status === 202) {
+      const personToken = await runDeferredResponse({
+        res,
+        body,
+        endpoint,
+        psMetadata,
+        consentKey: `${consentKey}-person`,
+        copyPrefix: 'person_token',
+        tokenField: 'person_token',
+        consentLabel: copy('person_token.ps_consent_prompt.label'),
+        consentDescription: desc('person_token.ps_consent_prompt'),
+        pendingRecord: { ...pendingRecord, stage: 'person-token', psUrl: bindingPs },
+      })
+      if (!personToken) return null
+      showPersonTokenReceived(personToken)
+      return { personToken, psMetadata }
+    }
+
+    appendStepBody(step, anotherRequestButton())
+    return null
+  } catch (err) {
+    resolveStep(step, 'error', fmt(copy('person_token.request.label_error_network_template'), { path }))
+    appendStepBody(step, `<p style="color: var(--error)">${escapeHtml(err.message)}</p>` + anotherRequestButton())
+    return null
+  }
+}
+
+// The 200 path renders the decoded person_token inline on the request
+// step. The 202 path arrives via long-poll long after that step resolved,
+// so without this the token the person just approved would never surface.
+function showPersonTokenReceived(personToken) {
+  addLogStep(copy('person_token.received.label'), 'success',
+    desc('person_token.received') +
+    formatDecoded(decodeJWTPayloadBrowser(personToken), 'person_token payload'),
+    { kind: 'response' },
+  )
+}
+
+// The mission the demo is operating under, when one has been set. There
+// is no mission UI in the playground yet; this is the seam the digest
+// travels through, so setting it is all it takes for mission_s256 to
+// appear on the person token and every token minted from it.
+function currentMissionS256() {
+  return window.AAUTH_MISSION_S256 || null
 }
 
 // ── Bootstrap ──
@@ -616,7 +789,8 @@ async function runBootstrap(psUrl) {
     desc('bootstrap.agent_provider_request') +
     formatRequest('POST', endpoint, {
       'Content-Type': 'application/json',
-      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+      'Content-Digest': 'sha-256=:...:',
+      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
       'Signature': 'sig=:...:',
       'Signature-Key': `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
     }, body)
@@ -631,7 +805,7 @@ async function runBootstrap(psUrl) {
       signingKey: publicJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'hwk' },
-      components: ['@method', '@authority', '@path', 'content-type', 'signature-key'],
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     result = await res.json().catch(() => null)
     if (!res.ok || !result?.agent_token) {
@@ -685,7 +859,8 @@ async function runRefresh() {
     desc('refresh.agent_provider_request') +
     formatRequest('POST', endpoint, {
       'Content-Type': 'application/json',
-      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+      'Content-Digest': 'sha-256=:...:',
+      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
       'Signature': 'sig=:...:',
       'Signature-Key': `sig=hwk;alg="${publicJwk.alg}";kty="${publicJwk.kty}";crv="${publicJwk.crv}";x="${publicJwk.x}"`,
     }, body)
@@ -700,7 +875,7 @@ async function runRefresh() {
       signingKey: publicJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'hwk' },
-      components: ['@method', '@authority', '@path', 'content-type', 'signature-key'],
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     result = await res.json().catch(() => null)
     if (!res.ok || !result?.agent_token) {
@@ -782,12 +957,17 @@ function getBoundPs() {
 
 // ── Whoami resource call ──
 //
-// Three-step ceremony that demonstrates the full resource-call flow:
+// Four-step ceremony that demonstrates the full resource-call flow:
 //
-//   1. Agent GETs whoami with its agent_token. Whoami responds 401 with
-//      a minted resource_token in AAuth-Requirement — it knows who the
-//      agent is, but the agent hasn't presented a user-released token yet.
-//   2. Agent exchanges the resource_token at the PS's /token endpoint.
+//   0. Agent POSTs its agent_token to the PS's person_token_endpoint,
+//      naming whoami as the resource, and gets a person_token back.
+//      -11 added this hop: a resource must have verified a person token
+//      before it may issue a resource token.
+//   1. Agent GETs whoami with that person_token. Whoami responds 401 with
+//      a minted resource_token in AAuth-Requirement — it knows which
+//      person the agent acts for, but a person token carries no
+//      authorization, so there is nothing yet that says what it may read.
+//   2. Agent exchanges the resource_token at the PS's auth_token_endpoint.
 //      Returns auth_token on 200 (user already consented to this scope
 //      pair) or 202 + interaction on first-time consent.
 //   3. Agent retries the GET with auth_token. Whoami verifies the token
@@ -848,18 +1028,53 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
 
   addLogSection(copy('sections.whoami'))
 
+  // Step 0: get a person token for whoami. Without one the resource can't
+  // issue a resource_token — it would have no PS-asserted person to name
+  // in it, and only the PS can act on a resource token. This may block on
+  // the person's approval at the PS; if that approval arrives after a
+  // same-tab redirect, this call never returns and resumePendingAuthorize
+  // re-enters at continueWhoami below.
+  const personResult = await fetchPersonToken({
+    resource: new URL(whoamiUrl).origin,
+    bindingPs,
+    keyPair,
+    agentToken,
+    signingJwk,
+    missionS256: currentMissionS256(),
+    consentKey: 'whoami',
+    pendingRecord: { whoamiUrl },
+  })
+  if (!personResult) return
+
+  await continueWhoami({
+    whoamiUrl,
+    bindingPs,
+    hints,
+    keyPair,
+    agentToken,
+    signingJwk,
+    personToken: personResult.personToken,
+    psMetadata: personResult.psMetadata,
+  })
+}
+
+// Everything after the person token is in hand. Called directly by
+// runWhoamiCall, and by resumePendingAuthorize when the person approved
+// the person token after a same-tab redirect to the PS.
+async function continueWhoami({ whoamiUrl, bindingPs, hints, keyPair, agentToken, signingJwk, personToken, psMetadata }) {
   const urlObj = new URL(whoamiUrl)
   const whoamiPathDisplay = urlObj.pathname + urlObj.search
 
-  // Step 1: unauthenticated-for-user GET. Agent token proves the agent's
-  // identity but carries no user claims, so whoami bounces with a
-  // resource_token the agent can trade at the PS.
+  // Step 1: GET whoami presenting the person token in place of the agent
+  // token. It identifies the person to this one resource but releases no
+  // authorization, so whoami bounces with a resource_token the agent can
+  // trade at the PS.
   const step1 = addLogStep(`Agent → Whoami: GET ${whoamiPathDisplay}`, 'pending',
-    `<p>Agent calls whoami with its agent_token. The resource knows the agent but has no user claims yet, so it returns 401 with a resource_token the agent can exchange at the Person Server.</p>` +
+    `<p>Agent calls whoami with the person_token it just obtained. The resource knows which person the agent acts for, but a person token carries no authorization, so it returns 401 with a resource_token the agent can exchange at the Person Server.</p>` +
     formatRequest('GET', whoamiUrl, {
       'Signature-Input': 'sig=("@method" "@authority" "@path" "signature-key");created=...',
       'Signature': 'sig=:...:',
-      'Signature-Key': `sig=jwt;jwt="${agentToken?.substring(0, 20)}..."`,
+      'Signature-Key': `sig=jwt;jwt="${personToken?.substring(0, 20)}..."`,
     }, null)
   )
 
@@ -869,8 +1084,8 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
       method: 'GET',
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
-      signatureKey: { type: 'jwt', jwt: agentToken },
-      components: ['@method', '@authority', '@path', 'signature-key'],
+      signatureKey: { type: 'jwt', jwt: personToken },
+      components: SIGNED_COMPONENTS,
     })
     const body = await res.json().catch(() => null)
     const requirement = res.headers.get('aauth-requirement') || ''
@@ -887,8 +1102,8 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
     if (res.status === 200) {
       resolveStep(step1, 'success', `Agent → Whoami: GET ${whoamiPathDisplay}`)
       appendStepBody(step1, formatResponse(200, respHeaders, body))
-      addLogStep('Agent identity received', 'success',
-        `<p>No scopes were requested, so whoami returned the agent's own identity straight from the agent_token — no Person Server exchange needed.</p>` +
+      addLogStep('Person identity received', 'success',
+        `<p>No scopes were requested, so whoami answered on identity alone — straight from the person_token, with no auth token and no Person Server exchange. A resource that serves requests this way treats holding a person token as access.</p>` +
         tokenWrap(renderJSON(body)) +
         anotherRequestButton(),
         { kind: 'response' }
@@ -926,6 +1141,7 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
     keyPair,
     agentToken,
     signingJwk,
+    psMetadata,
     labels: {
       postLabel: (path) => `Agent → Person Server: POST ${path}`,
       postLabelResolved: (path, status) =>
@@ -933,12 +1149,11 @@ async function runWhoamiCall(whoamiUrl, bindingPs, hints) {
           ? `Agent → Person Server: POST ${path}`
           : `Agent → Person Server: POST ${path} → ${status}`,
       postLabelNetworkError: (path) => `Agent → Person Server: POST ${path} (network error)`,
-      postDescription: `<p>Agent presents the resource_token and its agent_token to the Person Server's token endpoint. The PS either releases an auth_token immediately (cached consent) or returns a 202 with a consent prompt.</p>`,
-      pollLabel: (path) => `Agent → Person Server: GET ${path} (long-poll)`,
-      pollDescription: `<p>Agent keeps a request open while you decide, instead of polling. The Person Server answers the moment you approve or deny.</p>`,
+      postDescription: `<p>Agent presents the resource_token and its agent_token to the Person Server's auth token endpoint. The PS looks up the person token named by <code>person_token_jti</code>, checks the resource_token's <code>ps</code> and <code>sub</code> against it, then either releases an auth_token immediately (cached consent) or returns a 202 with a consent prompt.</p>`,
       consentLabel: copy('authorize.ps_consent_prompt.label'),
       consentDescription: desc('authorize.ps_consent_prompt'),
     },
+    copyPrefix: 'authorize',
     consentKey: 'whoami',
     pendingExtra: { whoamiUrl },
     onAuthToken: async (token, { viaPolling }) => {
@@ -980,7 +1195,7 @@ async function retryWhoami(whoamiUrl, whoamiPathDisplay, authToken, keyPair, sig
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'jwt', jwt: authToken },
-      components: ['@method', '@authority', '@path', 'signature-key'],
+      components: SIGNED_COMPONENTS,
     })
     const body = await res.json().catch(() => null)
     resolveStep(step, res.ok ? 'success' : 'error', `Agent → Whoami: GET ${whoamiPathDisplay}`)
@@ -1112,8 +1327,18 @@ function clearPendingAuthorize() {
 let _resumeAuthorizePolling = false
 
 // Called on page load: if we have a persisted pending-authorize, resume
-// polling the PS for auth_token. Mounted after app.js init so the
-// signing key + agent_token are already restored.
+// polling the PS for whichever token was deferred. Mounted after app.js
+// init so the signing key + agent_token are already restored.
+//
+// Two stages can defer, and the record's `stage` says which:
+//   'person-token' — the PS asked whether this agent may act at the
+//                    resource as the person. Resuming polls for the
+//                    person token and then re-enters the ceremony at
+//                    continueWhoami / continueNotesAuthorize, which run
+//                    the resource call and the auth-token exchange.
+//   'auth-token'   — the PS asked which scopes to release. Resuming
+//                    polls for the auth token and finishes the flow.
+// Records written before `stage` existed are treated as 'auth-token'.
 async function resumePendingAuthorize() {
   let saved
   try { saved = JSON.parse(localStorage.getItem(PENDING_AUTHZ_KEY) || 'null') } catch { saved = null }
@@ -1162,7 +1387,13 @@ async function resumePendingAuthorize() {
   // notesAuthorize) tell us which branch to rehydrate. Default to
   // whoami for records saved before the notes flow existed.
   const isNotes = !!saved.notesAuthorize
-  const promptKey = isNotes ? 'notes_resumed.ps_consent_prompt' : 'whoami_resumed.ps_consent_prompt'
+  const isPersonStage = saved.stage === 'person-token'
+  // The person-token leg asks a different question than the auth-token
+  // leg — whether the agent may act as you at the resource, not which
+  // scopes to release — so it gets its own resumed copy.
+  const promptKey = isPersonStage
+    ? 'person_token_resumed.ps_consent_prompt'
+    : (isNotes ? 'notes_resumed.ps_consent_prompt' : 'whoami_resumed.ps_consent_prompt')
   // Persisted log (restored at init) should already carry the in-progress
   // Notes/Whoami section; append into it rather than branching a new
   // "(resumed)" section. Fallback opens a fresh section if nothing's
@@ -1178,43 +1409,78 @@ async function resumePendingAuthorize() {
   // stops the flare, turning it into a completed record without
   // blowing out the section. Fallback creates a fresh step if the
   // persisted log was cleared mid-flow.
-  const consentKey = isNotes ? 'notes' : 'whoami'
+  //
+  // The person-token leg tags its steps with a '-person' suffix so both
+  // consent cards can coexist in one ceremony's log without colliding.
+  const consentKey = `${isNotes ? 'notes' : 'whoami'}${isPersonStage ? '-person' : ''}`
   let interactionStep = log.querySelector(`[data-consent-key="${consentKey}"]`)
   if (!interactionStep) {
     interactionStep = addLogStep(copy(`${promptKey}.label`), 'pending', desc(promptKey))
   }
 
-  // On auth_token arrival, route to the flow-specific handler:
+  // Reuse pre-redirect pollStep if the persisted log carries it —
+  // otherwise the poll loop would create a fresh one, leaving the
+  // original stuck pending.
+  const existingPollStep = log.querySelector(`[data-poll-key="${consentKey}"]`)
+  const signingJwk = await exportSigningJwk(keyPair.publicKey)
+
+  const token = await startDeferredPolling(
+    saved.pollUrl, saved.tokenEndpoint, interactionStep, existingPollStep || null,
+    {
+      tokenField: isPersonStage ? 'person_token' : 'auth_token',
+      copyPrefix: isPersonStage ? 'person_token' : (isNotes ? 'notes' : 'authorize'),
+      // No continuation below for a record with neither marker — fall
+      // back to the generic "Authorization Granted" step.
+      renderGranted: !isPersonStage && !isNotes && !saved.whoamiUrl,
+    },
+  )
+  if (!token) return true
+
+  if (isPersonStage) {
+    // The person approved the agent acting as them at this resource.
+    // Pick the ceremony back up where fetchPersonToken left off. Pass no
+    // psMetadata — the continuation re-fetches the PS document rather
+    // than carrying it across a page load.
+    showPersonTokenReceived(token)
+    if (isNotes) {
+      await continueNotesAuthorize({
+        authzEndpoint: saved.authzEndpoint || `${window.NOTES_ORIGIN}/authorize`,
+        operations: saved.operations || [],
+        bindingPs: saved.psUrl,
+        hints: getHints(),
+        keyPair,
+        agentToken,
+        signingJwk,
+        personToken: token,
+        psMetadata: null,
+      })
+    } else if (saved.whoamiUrl) {
+      await continueWhoami({
+        whoamiUrl: saved.whoamiUrl,
+        bindingPs: saved.psUrl,
+        hints: getHints(),
+        keyPair,
+        agentToken,
+        signingJwk,
+        personToken: token,
+        psMetadata: null,
+      })
+    }
+    return true
+  }
+
+  // Auth-token stage: route to the flow-specific finish.
   //   notes  → finalizeNotesAuthToken persists the token and mounts the
   //            Notes app.
   //   whoami → retryWhoami replays the GET whoami/?scope=… signed with
   //            the fresh auth_token and renders identity claims.
-  //   (neither marker) → startAuthTokenPolling falls through to the
-  //            generic "Authorization Granted" step.
-  let options = {}
   if (isNotes) {
-    options = {
-      onAuthToken: async (tokenFromPoll) => {
-        await finalizeNotesAuthToken(tokenFromPoll)
-      },
-    }
+    await finalizeNotesAuthToken(token)
   } else if (saved.whoamiUrl) {
     const urlObj = new URL(saved.whoamiUrl)
-    const whoamiPathDisplay = urlObj.pathname + urlObj.search
-    const signingJwk = await exportSigningJwk(keyPair.publicKey)
-    options = {
-      onAuthToken: async (tokenFromPoll) => {
-        showWhoamiAuthTokenReceived(tokenFromPoll)
-        await retryWhoami(saved.whoamiUrl, whoamiPathDisplay, tokenFromPoll, keyPair, signingJwk)
-      },
-    }
+    showWhoamiAuthTokenReceived(token)
+    await retryWhoami(saved.whoamiUrl, urlObj.pathname + urlObj.search, token, keyPair, signingJwk)
   }
-
-  // Reuse pre-redirect pollStep if persisted log carries it — otherwise
-  // startAuthTokenPolling would create a fresh one, leaving the
-  // original stuck pending.
-  const existingPollStep = log.querySelector(`[data-poll-key="${consentKey}"]`)
-  startAuthTokenPolling(saved.pollUrl, saved.tokenEndpoint, interactionStep, existingPollStep || null, options)
   return true
 }
 window.resumePendingAuthorize = resumePendingAuthorize
@@ -1246,8 +1512,8 @@ if (document.readyState === 'complete') {
 // The pre-PS phase differs (whoami: 401 bounce on the resource itself;
 // notes: discovery + openapi + POST /authorize) and the post-token
 // phase differs (whoami: retry the GET, render identity claims; notes:
-// mount the Notes app, refresh the list), but PS metadata fetch +
-// POST /aauth/token + the 200/202 split + savePendingAuthorize +
+// mount the Notes app, refresh the list), but the POST to the PS's
+// auth_token_endpoint + the 200/202 split + savePendingAuthorize +
 // kicking off the long-poll are identical. Per-flow log strings are
 // passed in via `labels` so the rendered output stays exactly what
 // each flow had before.
@@ -1276,24 +1542,27 @@ async function runPSTokenExchange({
   // a separate "Auth Token received" step would just duplicate). Notes
   // ignores it — its finalizeNotesAuthToken always emits its own step.
   onAuthToken,
+  // PS metadata already fetched for the person-token hop. Both flows pass
+  // it through rather than re-fetching the same document.
+  psMetadata: knownPsMetadata,
+  // Narration block in log-text.json the deferred (202) leg reads its
+  // long-poll and terminal labels from.
+  copyPrefix,
 }) {
-  const psMetadataUrl = `${bindingPs.replace(/\/$/, '')}/.well-known/aauth-person.json`
-  let psMetadata
-  try {
-    const metaRes = await fetch(psMetadataUrl)
-    psMetadata = await metaRes.json()
-    if (!metaRes.ok || !psMetadata?.token_endpoint) {
-      addLogStep('Person Server metadata fetch failed', 'error',
-        formatResponse(metaRes.status, null, psMetadata) + anotherRequestButton())
-      return
-    }
-  } catch (err) {
+  const psMetadata = knownPsMetadata || await fetchPsMetadata(bindingPs, 'auth_token_endpoint')
+  if (!psMetadata) return
+  if (!psMetadata.auth_token_endpoint) {
     addLogStep('Person Server metadata fetch failed', 'error',
-      `<p style="color: var(--error)">${escapeHtml(err.message)}</p>` + anotherRequestButton())
+      `<p>The Person Server's metadata is missing <code>auth_token_endpoint</code>.</p>` +
+      tokenWrap(renderJSON(psMetadata)) + anotherRequestButton())
     return
   }
 
-  const tokenEndpoint = psMetadata.token_endpoint
+  // -11 renamed this field from `token_endpoint`. The PS now has two
+  // token endpoints — this one issues auth tokens, `person_token_endpoint`
+  // issues person tokens — so a name containing only "token" no longer
+  // says which.
+  const tokenEndpoint = psMetadata.auth_token_endpoint
   const psPath = new URL(tokenEndpoint).pathname
   const psBody = {
     resource_token: resourceToken,
@@ -1309,7 +1578,8 @@ async function runPSTokenExchange({
     labels.postDescription +
     formatRequest('POST', tokenEndpoint, {
       'Content-Type': 'application/json',
-      'Signature-Input': 'sig=("@method" "@authority" "@path" "signature-key");created=...',
+      'Content-Digest': 'sha-256=:...:',
+      'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
       'Signature': 'sig=:...:',
       'Signature-Key': `sig=jwt;jwt="${agentToken?.substring(0, 20)}..."`,
     }, psBody),
@@ -1324,7 +1594,9 @@ async function runPSTokenExchange({
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'jwt', jwt: agentToken },
-      components: ['@method', '@authority', '@path', 'signature-key'],
+      // -11: a request carrying a body to a PS or AS endpoint MUST
+      // additionally sign content-digest and content-type.
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     const psResBody = await psRes.json().catch(() => null)
     const respHeaders = {}
@@ -1343,57 +1615,20 @@ async function runPSTokenExchange({
       resolveStep(step2, 'success', labels.postLabelResolved(psPath, 202))
       appendStepBody(step2, formatResponse(202, respHeaders, psResBody))
 
-      const reqHeader = psRes.headers.get('aauth-requirement') || ''
-      const fromHeader = parseInteractionHeader(reqHeader)
-      const interaction = {
-        requirement: fromHeader.requirement || psResBody?.requirement,
-        code: fromHeader.code || psResBody?.code,
-        url: fromHeader.url || psMetadata.interaction_endpoint,
-      }
-      const pollUrl = psRes.headers.get('location') || psResBody?.location
-
-      let pollStep = null
-      if (pollUrl) {
-        const absolutePollUrl = new URL(pollUrl, tokenEndpoint).href
-        pollStep = addLogStep(labels.pollLabel(new URL(absolutePollUrl).pathname), 'pending',
-          labels.pollDescription +
-          formatRequest('GET', absolutePollUrl, {
-            'Prefer': `wait=${POLL_WAIT_SECONDS}`,
-            'Signature-Input': 'sig=("@method" "@authority" "@path" "signature-key");created=...',
-            'Signature': 'sig=:...:',
-            'Signature-Key': `sig=jwt;jwt="${agentToken?.substring(0, 20)}..."`,
-          }, null),
-        )
-        if (pollStep) {
-          pollStep.dataset.pollKey = consentKey
-          persistActiveLog()
-        }
-      }
-      const interactionStep = addLogStep(labels.consentLabel, 'pending',
-        labels.consentDescription + renderInteraction(interaction, pollUrl, 'authorize'))
-      // Tag so resumePendingAuthorize can reuse this step on return
-      // from the PS instead of leaving the stale "Continue with Hellō /
-      // QR" card alongside the fresh poll step.
-      if (interactionStep) {
-        interactionStep.dataset.consentKey = consentKey
-        persistActiveLog()
-      }
-
-      if (pollUrl) {
-        const absolutePollUrl = new URL(pollUrl, tokenEndpoint).href
-        savePendingAuthorize({
-          pollUrl: absolutePollUrl,
-          tokenEndpoint,
-          psUrl: bindingPs,
-          ...pendingExtra,
-        })
-        startAuthTokenPolling(pollUrl, tokenEndpoint, interactionStep, pollStep, {
-          onAuthToken: async (tokenFromPoll) => {
-            await onAuthToken(tokenFromPoll, { viaPolling: true })
-          },
-        })
-      }
-      return // polling handles the rest
+      const tokenFromPoll = await runDeferredResponse({
+        res: psRes,
+        body: psResBody,
+        endpoint: tokenEndpoint,
+        psMetadata,
+        consentKey,
+        copyPrefix,
+        tokenField: 'auth_token',
+        consentLabel: labels.consentLabel,
+        consentDescription: labels.consentDescription,
+        pendingRecord: { ...pendingExtra, stage: 'auth-token', psUrl: bindingPs },
+      })
+      if (tokenFromPoll) await onAuthToken(tokenFromPoll, { viaPolling: true })
+      return // the deferred leg handled the rest
     } else {
       resolveStep(step2, 'error', labels.postLabelResolved(psPath, psRes.status))
       appendStepBody(step2, formatResponse(psRes.status, respHeaders, psResBody) + anotherRequestButton())
@@ -1410,32 +1645,117 @@ async function runPSTokenExchange({
   await onAuthToken(authToken, { viaPolling: false })
 }
 
-// ── Auth-token polling (for PS /token interaction flow) ──
+// ── Deferred-response polling ──
 //
-// Long-poll pattern: send `Prefer: wait=POLL_WAIT_SECONDS`
-// and loop immediately on 202. Agent token + ephemeral key are snapshotted
-// once at start; the polling is signed with sig=jwt using them.
+// Both PS token endpoints answer 202 when the person has to decide first:
+// `person_token_endpoint` asks whether this agent may act at the resource
+// as them, `auth_token_endpoint` asks which scopes to release. The shape
+// is identical either way — Location, Retry-After, an
+// `AAuth-Requirement: requirement=interaction` with url + code, and a
+// long-poll until terminal — so one loop drives both. `tokenField` names
+// the member the 200 carries (`person_token` or `auth_token`) and
+// `copyPrefix` selects the narration block in log-text.json.
+//
+// Long-poll pattern: send `Prefer: wait=POLL_WAIT_SECONDS` and loop
+// immediately on 202. Agent token + ephemeral key are snapshotted once at
+// start; the polling is signed with sig=jwt using them.
+//
+// Resolves with the token string, or null if the interaction was denied,
+// expired, or timed out. Never resolves when the person approves after a
+// same-tab redirect — the page is gone by then, and resumePendingAuthorize
+// picks the flow back up on return.
 
-// Module-level guard: at most one authz poll loop ever running. Callers
-// (runWhoamiCall, resumePendingAuthorize) may each invoke us
-// independently; without this flag their loops interleave and one loop's
-// signature stamps trail the other's by 30s+, which the PS sees as stale
-// signatures and rejects with skew-at-tolerance-boundary 401s. Clear on
-// terminal status (200 / 403 / 408) so a follow-up authorization can
-// start fresh.
-let _authzPollRunning = false
+// Module-level guard: at most one poll loop ever running. Callers
+// (fetchPersonToken, runPSTokenExchange, resumePendingAuthorize) may each
+// invoke us independently; without this flag their loops interleave and
+// one loop's signature stamps trail the other's by 30s+, which the PS sees
+// as stale signatures and rejects with skew-at-tolerance-boundary 401s.
+// Cleared on terminal status (200 / 403 / 404 / 408) so the next leg of
+// the same ceremony — and any follow-up authorization — can start fresh.
+let _deferredPollRunning = false
 
-async function startAuthTokenPolling(pollUrl, baseUrl, interactionStep, pollStep, options = {}) {
-  if (_authzPollRunning) return
-  _authzPollRunning = true
+async function startDeferredPolling(pollUrl, baseUrl, interactionStep, pollStep, options = {}) {
+  if (_deferredPollRunning) return null
+  _deferredPollRunning = true
   try {
-    await _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pollStep, options)
+    return await _deferredPollingImpl(pollUrl, baseUrl, interactionStep, pollStep, options)
   } finally {
-    _authzPollRunning = false
+    _deferredPollRunning = false
   }
 }
 
-async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pollStep, options = {}) {
+// Render a 202 from either PS token endpoint and drive it to a token:
+// long-poll step, the consent card the person acts on, and a persisted
+// pending record so a same-tab redirect to the PS can be resumed on
+// return. Resolves with the token, or null if the person declined or the
+// interaction lapsed.
+async function runDeferredResponse({
+  res,
+  body,
+  endpoint,
+  psMetadata,
+  // 'whoami' | 'notes', suffixed per leg — written to data-poll-key /
+  // data-consent-key so resumePendingAuthorize can re-locate both steps
+  // after the redirect instead of orphaning them as stale pending rows.
+  consentKey,
+  copyPrefix,
+  tokenField,
+  consentLabel,
+  consentDescription,
+  // Merged into the persisted record; carries `stage` plus whatever the
+  // resumed flow needs to pick up where it left off.
+  pendingRecord,
+}) {
+  const fromHeader = parseInteractionHeader(res.headers.get('aauth-requirement') || '')
+  const interaction = {
+    requirement: fromHeader.requirement || body?.requirement,
+    code: fromHeader.code || body?.code,
+    url: fromHeader.url || psMetadata?.interaction_endpoint,
+  }
+  const pollUrl = res.headers.get('location') || body?.location
+  if (!pollUrl) {
+    addLogStep('Deferred response missing Location', 'error',
+      `<p>The Person Server answered 202 without a <code>Location</code> to poll, so the agent has nowhere to wait.</p>` +
+      anotherRequestButton())
+    return null
+  }
+  const absolutePollUrl = new URL(pollUrl, endpoint).href
+  const agentToken = localStorage.getItem('aauth-agent-token')
+
+  const pollStep = addLogStep(
+    fmt(copy(`${copyPrefix}.ps_pending_longpoll.label_template`), { path: new URL(absolutePollUrl).pathname }),
+    'pending',
+    desc(`${copyPrefix}.ps_pending_longpoll`) +
+      formatRequest('GET', absolutePollUrl, {
+        'Prefer': `wait=${POLL_WAIT_SECONDS}`,
+        'Signature-Input': 'sig=("@method" "@authority" "@path" "signature-key");created=...',
+        'Signature': 'sig=:...:',
+        'Signature-Key': `sig=jwt;jwt="${agentToken?.substring(0, 20)}..."`,
+      }, null),
+  )
+  if (pollStep) {
+    pollStep.dataset.pollKey = consentKey
+    persistActiveLog()
+  }
+
+  const interactionStep = addLogStep(consentLabel, 'pending',
+    consentDescription + renderInteraction(interaction, pollUrl, 'authorize'))
+  if (interactionStep) {
+    interactionStep.dataset.consentKey = consentKey
+    persistActiveLog()
+  }
+
+  savePendingAuthorize({ ...pendingRecord, pollUrl: absolutePollUrl, tokenEndpoint: endpoint })
+
+  return startDeferredPolling(absolutePollUrl, endpoint, interactionStep, pollStep, {
+    tokenField,
+    copyPrefix,
+  })
+}
+
+async function _deferredPollingImpl(pollUrl, baseUrl, interactionStep, pollStep, options = {}) {
+  const tokenField = options.tokenField || 'auth_token'
+  const copyPrefix = options.copyPrefix || 'authorize'
   // Pin the log container this poll loop writes into BEFORE any await.
   // While the long-poll awaits user interaction, other code may run
   // that flips __activeLogContainer (e.g. restoreNotesApp →
@@ -1444,25 +1764,25 @@ async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pol
   // may no longer point at the log this flow started in — terminal
   // steps would then land in the wrong tab and read as a "stuck"
   // flow. Capture synchronously here, restore right before every
-  // terminal addLogStep / onAuthToken handoff. Capturing after any
+  // terminal addLogStep and before resolving. Capturing after any
   // await is too late: the clobber can have already happened.
   const targetLog = currentLog()
   const pinLog = () => { if (targetLog) __activeLogContainer = targetLog }
   const absolutePollUrl = new URL(pollUrl, baseUrl).href
   const keyPair = window.aauthEphemeral.get()
   const agentToken = localStorage.getItem('aauth-agent-token')
-  if (!keyPair || !agentToken) return
+  if (!keyPair || !agentToken) return null
   const signingJwk = await exportSigningJwk(keyPair.publicKey)
 
   const pollPath = new URL(absolutePollUrl).pathname
   // Caller can pre-create the pollStep so the log orders as
-  //   POST /aauth/token → 202
-  //   GET  /aauth/pending (long-poll)
+  //   POST {endpoint}  → 202
+  //   GET  {pending}   (long-poll)
   //   User at PS: consent prompt
   // When not provided (resume paths), fall back to creating it inline.
   if (!pollStep) {
-    pollStep = addLogStep(fmt(copy('authorize.ps_pending_longpoll.label_template'), { path: pollPath }), 'pending',
-      desc('authorize.ps_pending_longpoll') +
+    pollStep = addLogStep(fmt(copy(`${copyPrefix}.ps_pending_longpoll.label_template`), { path: pollPath }), 'pending',
+      desc(`${copyPrefix}.ps_pending_longpoll`) +
       formatRequest('GET', absolutePollUrl, {
         'Prefer': `wait=${POLL_WAIT_SECONDS}`,
         'Signature-Input': 'sig=("@method" "@authority" "@path" "signature-key");created=...',
@@ -1481,8 +1801,11 @@ async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pol
         headers: { Prefer: `wait=${POLL_WAIT_SECONDS}` },
         signingKey: signingJwk,
         signingCryptoKey: keyPair.privateKey,
+        // The poll is signed with the agent_token in every case: it is
+        // the agent asking its own PS about a request it made, not a
+        // resource call.
         signatureKey: { type: 'jwt', jwt: agentToken },
-        components: ['@method', '@authority', '@path', 'signature-key'],
+        components: SIGNED_COMPONENTS,
       })
       const respHeaders = {}
       for (const key of ['retry-after', 'aauth-requirement']) {
@@ -1504,46 +1827,43 @@ async function _startAuthTokenPollingImpl(pollUrl, baseUrl, interactionStep, pol
       }
       if (res.status === 200) {
         clearPendingAuthorize()
-        resolveStep(pollStep, 'success', fmt(copy('authorize.ps_pending_longpoll.label_resolved_template'), { path: pollPath, status: 200 }))
+        resolveStep(pollStep, 'success', fmt(copy(`${copyPrefix}.ps_pending_longpoll.label_resolved_template`), { path: pollPath, status: 200 }))
         // Resolve only — the interaction-box body stays in place as
         // a record of the consent interface the user was handed. CSS
         // (.log-step.success .interaction-box) stops the flare and
         // overlays an approved check mark across the box.
         resolveStep(interactionStep, 'success', 'Interaction Completed')
         pinLog()
-        // If a caller supplied onAuthToken (e.g. whoami needs to retry the
-        // resource call with the freshly-minted token), hand off to them.
-        // Otherwise render the generic "Authorization Granted" step.
-        if (options.onAuthToken && body?.auth_token) {
-          await options.onAuthToken(body.auth_token)
-        } else {
-          addLogStep(copy('authorize.authorization_granted.label'), 'success',
-            (body?.auth_token ? formatAuthToken(body.auth_token) : '') +
-            anotherRequestButton(),
-            { kind: 'response' })
-        }
-        return
+        const token = body?.[tokenField]
+        // The caller resumes its ceremony with the token. The generic
+        // "granted" step is only for the auth-token leg with no
+        // continuation — the person-token leg always has one.
+        if (!options.renderGranted) return token || null
+        addLogStep(copy(`${copyPrefix}.authorization_granted.label`), 'success',
+          (token ? formatAuthToken(token) : '') + anotherRequestButton(),
+          { kind: 'response' })
+        return token || null
       }
       if (res.status === 404) {
         clearPendingAuthorize()
-        resolveStep(pollStep, 'error', fmt(copy('authorize.ps_pending_longpoll.label_resolved_template'), { path: pollPath, status: 404 }))
+        resolveStep(pollStep, 'error', fmt(copy(`${copyPrefix}.ps_pending_longpoll.label_resolved_template`), { path: pollPath, status: 404 }))
         resolveStep(interactionStep, 'error', 'Interaction Expired')
         pinLog()
         addLogStep('Interaction expired', 'error',
           formatResponse(404, null, body) + anotherRequestButton(),
           { kind: 'response' })
-        return
+        return null
       }
       if (res.status === 403 || res.status === 408) {
         clearPendingAuthorize()
         const label = res.status === 403 ? 'Interaction Denied' : 'Interaction Timed Out'
-        resolveStep(pollStep, 'error', fmt(copy('authorize.ps_pending_longpoll.label_resolved_template'), { path: pollPath, status: res.status }))
+        resolveStep(pollStep, 'error', fmt(copy(`${copyPrefix}.ps_pending_longpoll.label_resolved_template`), { path: pollPath, status: res.status }))
         resolveStep(interactionStep, 'error', label)
         pinLog()
-        addLogStep(copy(res.status === 403 ? 'authorize.authorization_denied.label' : 'authorize.authorization_timed_out.label'), 'error',
+        addLogStep(copy(res.status === 403 ? `${copyPrefix}.authorization_denied.label` : `${copyPrefix}.authorization_timed_out.label`), 'error',
           formatResponse(res.status, null, body) + anotherRequestButton(),
           { kind: 'response' })
-        return
+        return null
       }
       // 202 → loop immediately (server already held up to 30s)
     } catch (err) {
@@ -1571,15 +1891,16 @@ function decodeJWTPayloadBrowser(jwt) {
 //   • /.well-known/aauth-resource.json — advertises authorization_endpoint
 //     and r3_vocabularies[urn:aauth:vocabulary:openapi] pointing at an
 //     OpenAPI spec enumerating the API's operations.
-//   • /authorize — POST signed with agent_token + r3_operations body
+//   • /authorize — POST signed with a person token + r3_operations body
 //     naming the operationIds we want; returns a resource_token.
 //   • /notes* — CRUD API gated by auth_token.r3_granted.
 //
 // Flow: tab activation fetches the metadata + OpenAPI (once per page)
-// and renders a checkbox per operationId. "Notes with Hellō" signs the
-// /authorize POST, exchanges the resource_token at the user's PS, and
-// either gets a 200 auth_token (cached consent) or 202 + interaction
-// that drives the existing auth-token polling loop. Once an auth_token
+// and renders a checkbox per operationId. "Notes with Hellō" gets a
+// person token for notes.aauth.dev, signs the /authorize POST with it,
+// exchanges the resource_token at the user's PS, and either gets a 200
+// auth_token (cached consent) or 202 + interaction that drives the
+// deferred-response polling loop. Once an auth_token
 // lands we persist it, reveal the Notes fieldset, and render a
 // list/create/view/edit/delete UI gated on r3_granted.operations.
 
@@ -1840,6 +2161,43 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
   }
   _notesMetadata = discovery.metadata
   const authzEndpoint = discovery.metadata.authorization_endpoint || `${window.NOTES_ORIGIN}/authorize`
+
+  // Step 1: get a person token for notes.aauth.dev. The authorization
+  // endpoint requires one — a resource that can't name a person can only
+  // issue a resource token nobody can redeem. May block on the person's
+  // approval; if that lands after a same-tab redirect this never returns
+  // and resumePendingAuthorize re-enters at continueNotesAuthorize.
+  const personResult = await fetchPersonToken({
+    resource: new URL(authzEndpoint).origin,
+    bindingPs,
+    keyPair,
+    agentToken,
+    signingJwk,
+    missionS256: currentMissionS256(),
+    consentKey: 'notes',
+    pendingRecord: { notesAuthorize: true, operations, authzEndpoint },
+  })
+  if (!personResult) return
+
+  await continueNotesAuthorize({
+    authzEndpoint,
+    operations,
+    bindingPs,
+    hints,
+    keyPair,
+    agentToken,
+    signingJwk,
+    personToken: personResult.personToken,
+    psMetadata: personResult.psMetadata,
+  })
+}
+
+// Everything after the person token is in hand. Called directly by
+// runNotesAuthorize, and by resumePendingAuthorize when the person
+// approved the person token after a same-tab redirect to the PS.
+async function continueNotesAuthorize({
+  authzEndpoint, operations, bindingPs, hints, keyPair, agentToken, signingJwk, personToken, psMetadata,
+}) {
   const authzPath = new URL(authzEndpoint).pathname
   const requestBody = {
     r3_operations: {
@@ -1848,16 +2206,17 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
     },
   }
 
-  // Step 1: POST /authorize to notes.aauth.dev, signed with agent_token.
+  // Step 2: POST /authorize to notes.aauth.dev, presenting the person token.
   const step1 = addLogStep(
     fmt(copy('notes.authorize_request.label_template'), { path: authzPath }),
     'pending',
     desc('notes.authorize_request') +
       formatRequest('POST', authzEndpoint, {
         'Content-Type': 'application/json',
-        'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "signature-key");created=...',
+        'Content-Digest': 'sha-256=:...:',
+        'Signature-Input': 'sig=("@method" "@authority" "@path" "content-type" "content-digest" "signature-key");created=...',
         'Signature': 'sig=:...:',
-        'Signature-Key': `sig=jwt;jwt="${agentToken?.substring(0, 20)}..."`,
+        'Signature-Key': `sig=jwt;jwt="${personToken?.substring(0, 20)}..."`,
       }, requestBody),
   )
   let resourceToken
@@ -1868,8 +2227,8 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
       body: JSON.stringify(requestBody),
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
-      signatureKey: { type: 'jwt', jwt: agentToken },
-      components: ['@method', '@authority', '@path', 'content-type', 'signature-key'],
+      signatureKey: { type: 'jwt', jwt: personToken },
+      components: SIGNED_COMPONENTS_WITH_BODY,
     })
     const body = await res.json().catch(() => null)
     if (res.ok && body?.resource_token) {
@@ -1889,11 +2248,11 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
     return
   }
 
-  // Step 2: hand off to the shared resource flow. Notes' R3-specific
+  // Step 3: hand off to the shared resource flow. Notes' R3-specific
   // behavior (the resource_token names an R3 document; the PS fetches
   // it and emits an auth_token with r3_granted) is captured in the
-  // copy keys passed below — the protocol shape from POST /aauth/token
-  // onward is identical to whoami's.
+  // copy keys passed below — the protocol shape from the POST to the
+  // auth_token_endpoint onward is identical to whoami's.
   await runPSTokenExchange({
     resourceToken,
     bindingPs,
@@ -1901,6 +2260,7 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
     keyPair,
     agentToken,
     signingJwk,
+    psMetadata,
     labels: {
       postLabel: (path) => fmt(copy('notes.ps_token_request.label_template'), { path }),
       postLabelResolved: (path, status) =>
@@ -1908,11 +2268,10 @@ async function runNotesAuthorize(operations, bindingPs, hints) {
       postLabelNetworkError: (path) =>
         fmt(copy('notes.ps_token_request.label_error_network_template'), { path }),
       postDescription: desc('notes.ps_token_request'),
-      pollLabel: (path) => fmt(copy('notes.ps_pending_longpoll.label_template'), { path }),
-      pollDescription: desc('notes.ps_pending_longpoll'),
       consentLabel: copy('notes.ps_consent_prompt.label'),
       consentDescription: desc('notes.ps_consent_prompt'),
     },
+    copyPrefix: 'notes',
     consentKey: 'notes',
     pendingExtra: { notesAuthorize: true },
     onAuthToken: async (token) => {
@@ -2138,9 +2497,7 @@ async function callNotesAPI(method, path, body) {
   const origin = window.NOTES_ORIGIN || 'https://notes.aauth.dev'
   const url = `${origin}${path}`
   const hasBody = body !== undefined && body !== null
-  const components = hasBody
-    ? ['@method', '@authority', '@path', 'content-type', 'signature-key']
-    : ['@method', '@authority', '@path', 'signature-key']
+  const components = signedComponents(hasBody)
 
   const copyKey =
     method === 'GET' && path === '/notes' ? 'notes_app.list_request'
@@ -2166,7 +2523,7 @@ async function callNotesAPI(method, path, body) {
     'pending',
     desc(copyKey) +
       formatRequest(method, url, {
-        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(hasBody ? { 'Content-Type': 'application/json', 'Content-Digest': 'sha-256=:...:' } : {}),
         'Signature-Input': 'sig=(...);created=...',
         'Signature': 'sig=:...:',
         'Signature-Key': `sig=jwt;jwt="${authToken.substring(0, 20)}..."`,
@@ -2325,7 +2682,7 @@ async function callDemoResourceApi(authToken) {
       signingKey: signingJwk,
       signingCryptoKey: keyPair.privateKey,
       signatureKey: { type: 'jwt', jwt: authToken },
-      components: ['@method', '@authority', '@path', 'signature-key'],
+      components: SIGNED_COMPONENTS,
     })
     const body = await res.json().catch(() => null)
     resolveStep(reqStep, res.ok ? 'success' : 'error', fmt(copy('demo_api.request.label_resolved_template'), { path: '/api/demo', status: res.status }))
