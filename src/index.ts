@@ -341,7 +341,7 @@ app.post('/authorize', async (c) => {
   }
 
   // Mint the resource token. It carries no agent identifier: `agent_jkt`
-  // binds it to the agent's key, and `ps`/`sub`/`person_token_jti` name
+  // binds it to the agent's key, and `ps`/`sub`/`presented_jti` name
   // the person and the exact person token this authorization rests on
   // (§Resource Token Structure).
   const agentJkt = await computeJwkThumbprint(
@@ -363,6 +363,10 @@ app.post('/authorize', async (c) => {
     jti: generateJTI(),
     ps: personPayload.iss as string,
     sub: personPayload.sub as string,
+    // `presented_jti` names the token this request carried (-11, issue #152);
+    // `person_token_jti` is its pre-rename alias, dual-emitted for PSes that
+    // still read the old name.
+    presented_jti: personPayload.jti as string,
     person_token_jti: personPayload.jti as string,
     agent_jkt: agentJkt,
     scope: body.scope,
