@@ -82,6 +82,7 @@ describe('GET /.well-known/aauth-resource.json', () => {
     const body = await res.json() as any
     expect(body.issuer).toBe('https://playground.test')
     expect(body.authorization_endpoint).toBe('https://playground.test/authorize')
+    expect(body.access_mode).toBe('auth-token')
     // Resource scopes only — identity scopes belong to the PS and flow
     // as claims on the auth_token, not as resource scope strings.
     expect(body.scope_descriptions).toMatchObject({
