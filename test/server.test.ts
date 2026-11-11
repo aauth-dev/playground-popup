@@ -1,12 +1,19 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import { webcrypto } from 'node:crypto'
 import { fetch as sigFetch } from '@hellocoop/httpsig'
 import { decodeJWTPayload } from '../src/crypto'
+import { clearKeyCache } from '../src/key-resolver'
 
 beforeAll(() => {
   if (!(globalThis as any).crypto) {
     ;(globalThis as any).crypto = webcrypto
   }
+})
+
+// Every test stands up its own PS at the same origin with a fresh key, so
+// the key resolver's cache (and its refetch floor) must not carry over.
+beforeEach(() => {
+  clearKeyCache()
 })
 
 // ── Test fixtures ──
@@ -575,6 +582,65 @@ describe('POST /authorize', () => {
     const resBody = await res.json() as any
     // scope on the resource_token carries the agent's request verbatim.
     expect(resBody.resource_token_decoded.scope).toBe('openid profile playground.demo')
+    vi.unstubAllGlobals()
+  })
+
+  // Key discovery goes through the shared key resolver, which reports each
+  // outbound fetch as aauth.playground-popup.key_fetch.
+  const keyFetchEvents = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls
+      .map(([line]) => line as Record<string, unknown>)
+      .filter((line) => line?.event === 'aauth.playground-popup.key_fetch')
+
+  it('emits one key_fetch per document fetched, and none when served from cache', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { app, env, agent, personToken } = await setup()
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+
+    const first = await post(app, env, { scope: 'playground.demo' }, personToken, agent.privateJwk)
+    expect(first.status).toBe(200)
+    expect(keyFetchEvents(log)).toMatchObject([
+      {
+        service: 'playground-popup', level: 30, doc: 'metadata', reason: 'cold', ok: true, status: 200,
+        url: `${PS_ORIGIN}/.well-known/aauth-person.json`, id: PS_ORIGIN, dwk: 'aauth-person.json',
+      },
+      {
+        service: 'playground-popup', level: 30, doc: 'jwks', reason: 'cold', ok: true, status: 200,
+        url: `${PS_ORIGIN}/.well-known/jwks.json`, id: PS_ORIGIN, dwk: 'aauth-person.json',
+      },
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const second = await post(app, env, { scope: 'playground.demo' }, personToken, agent.privateJwk)
+    expect(second.status).toBe(200)
+    expect(keyFetchEvents(log)).toHaveLength(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    log.mockRestore()
+    vi.unstubAllGlobals()
+  })
+
+  it('emits a failed key_fetch at level 40, and holds the refetch floor after it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const app = await loadApp()
+    const { env } = await makeEnv()
+    const agent = await makeAgentKey()
+    const ps = await makePersonServer()
+    const token = await ps.mintPersonToken({ aud: env.ORIGIN, agentPublicJwk: agent.publicJwk })
+    const fetchMock = vi.fn(async () => new Response('nope', { status: 404 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (let i = 0; i < 2; i++) {
+      const res = await post(app, env, { scope: 'playground.demo' }, token, agent.privateJwk)
+      expect(res.status).toBe(400)
+      expect((await res.json() as any).error).toBe('invalid_person_token')
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(keyFetchEvents(warn)).toMatchObject([
+      { level: 40, doc: 'metadata', reason: 'cold', ok: false, status: 404 },
+    ])
+
+    warn.mockRestore()
     vi.unstubAllGlobals()
   })
 })
